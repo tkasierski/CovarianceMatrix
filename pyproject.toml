@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "covariance-matrix"
+version = "0.1.0"
+description = "Generate covariance, correlation, downside-risk, and drawdown tables for public securities."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+    "pandas>=2.2",
+    "xlsxwriter>=3.2",
+    "yfinance>=0.2.40"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+covariance-matrix = "covariance_matrix.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
