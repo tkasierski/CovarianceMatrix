@@ -11,9 +11,6 @@ from xlsxwriter.utility import xl_col_to_name, xl_rowcol_to_cell
 import yfinance as yf
 
 
-RETURN_OBSERVATION_BUFFER_ROWS = 250
-
-
 def parse_tickers(ticker_text: str | Iterable[str]) -> list[str]:
     """Parse tickers from commas, spaces, new lines, or an iterable of strings."""
     if isinstance(ticker_text, str):
@@ -22,14 +19,12 @@ def parse_tickers(ticker_text: str | Iterable[str]) -> list[str]:
         raw_items = list(ticker_text)
 
     tickers = [str(item).strip().upper() for item in raw_items if str(item).strip()]
-
     seen: set[str] = set()
     unique_tickers: list[str] = []
     for ticker in tickers:
         if ticker not in seen:
             seen.add(ticker)
             unique_tickers.append(ticker)
-
     return unique_tickers
 
 
@@ -42,7 +37,6 @@ def calculate_drawdown_metrics(
 
     for asset in monthly_simple_returns.columns:
         returns = monthly_simple_returns[asset].dropna()
-
         if returns.empty:
             drawdown_summary.append(
                 {
@@ -64,7 +58,6 @@ def calculate_drawdown_metrics(
 
         max_drawdown = drawdown.min()
         trough_date = drawdown.idxmin()
-
         pre_trough = wealth_index.loc[:trough_date]
         peak_value_before_trough = pre_trough.cummax().loc[trough_date]
         peak_dates = pre_trough[pre_trough == peak_value_before_trough].index
@@ -109,7 +102,6 @@ def calculate_downside_risk_metrics(
 
     for asset in monthly_simple_returns.columns:
         returns = monthly_simple_returns[asset].dropna()
-
         if returns.empty:
             metrics.append(
                 {
@@ -128,12 +120,8 @@ def calculate_downside_risk_metrics(
             continue
 
         monthly_vol = returns.std()
-        annualized_vol = monthly_vol * np.sqrt(12)
-
         downside_returns = np.minimum(returns - minimum_acceptable_return, 0)
         monthly_downside_deviation = np.sqrt(np.mean(downside_returns**2))
-        annualized_downside_deviation = monthly_downside_deviation * np.sqrt(12)
-
         var_95_threshold = returns.quantile(0.05)
         cvar_95_returns = returns[returns <= var_95_threshold]
         var_99_threshold = returns.quantile(0.01)
@@ -144,9 +132,9 @@ def calculate_downside_risk_metrics(
                 "Asset": asset,
                 "Observations": len(returns),
                 "Monthly Volatility": monthly_vol,
-                "Annualized Volatility": annualized_vol,
+                "Annualized Volatility": monthly_vol * np.sqrt(12),
                 "Monthly Downside Deviation": monthly_downside_deviation,
-                "Annualized Downside Deviation": annualized_downside_deviation,
+                "Annualized Downside Deviation": monthly_downside_deviation * np.sqrt(12),
                 "Historical 95% VaR": -var_95_threshold,
                 "Historical 95% CVaR": -cvar_95_returns.mean() if len(cvar_95_returns) > 0 else np.nan,
                 "Historical 99% VaR": -var_99_threshold,
@@ -159,7 +147,6 @@ def calculate_downside_risk_metrics(
 
 def _extract_adjusted_close(raw: pd.DataFrame, tickers: list[str]) -> tuple[pd.DataFrame, list[str], list[str]]:
     adj_close = pd.DataFrame()
-
     if len(tickers) == 1:
         ticker = tickers[0]
         if "Adj Close" in raw.columns:
@@ -202,21 +189,10 @@ def _write_formula_matrix(
             worksheet.write_formula(start_row + row_offset, start_col + col_offset, formula, cell_format)
 
 
-def _write_formula_series(
-    worksheet: xlsxwriter.worksheet.Worksheet,
-    start_row: int,
-    start_col: int,
-    formulas: list[str],
-    cell_format: xlsxwriter.format.Format | None = None,
-) -> None:
-    for row_offset, formula in enumerate(formulas):
-        worksheet.write_formula(start_row + row_offset, start_col, formula, cell_format)
-
-
 def _configure_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.format.Format]:
     return {
         "title": workbook.add_format({"bold": True, "font_size": 14}),
-        "section": workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1}),
+        "note": workbook.add_format({"italic": True, "text_wrap": True, "font_color": "#666666"}),
         "header": workbook.add_format({"bold": True, "bg_color": "#E7E6E6", "border": 1, "text_wrap": True}),
         "asset": workbook.add_format({"bold": True, "border": 1}),
         "number": workbook.add_format({"num_format": "0.0000", "border": 1}),
@@ -226,7 +202,6 @@ def _configure_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.fo
         "date": workbook.add_format({"num_format": "mm/dd/yyyy", "border": 1}),
         "input_percent": workbook.add_format({"num_format": "0.00%", "border": 1, "bg_color": "#E2F0D9"}),
         "input_currency": workbook.add_format({"num_format": "$#,##0", "border": 1, "bg_color": "#E2F0D9"}),
-        "input_number": workbook.add_format({"num_format": "0.0000", "border": 1, "bg_color": "#E2F0D9"}),
     }
 
 
@@ -239,6 +214,7 @@ def _write_live_covariance_sheet(
     workbook = writer.book
     worksheet = workbook.add_worksheet("Covariance_Matrix")
     writer.sheets["Covariance_Matrix"] = worksheet
+    worksheet.activate()
 
     n_assets = len(valid_tickers)
     log_sheet = "Monthly_Log_Returns"
@@ -248,10 +224,19 @@ def _write_live_covariance_sheet(
     monthly_top_row = 1
     monthly_left_col = 0
     annual_left_col = n_assets + 3
-    dashboard_top_row = n_assets + 5
+    dashboard_top_row = n_assets + 7
 
     worksheet.write(0, 0, "Monthly Covariance", formats["title"])
     worksheet.write(0, annual_left_col, "Annual Covariance", formats["title"])
+    note = (
+        "Risk calculations use the return series shown in Monthly_Log_Returns and "
+        "Monthly_Simple_Returns. To use custom return streams, replace values in both "
+        "return tabs. Covariance, correlation, and dashboard risk use log returns; "
+        "downside-risk metrics and drawdowns use simple returns. For private assets, "
+        "hedge funds, and PMEs, paste net returns if net-risk analysis is desired. "
+        "Expected returns are manual inputs."
+    )
+    worksheet.merge_range(dashboard_top_row - 2, 0, dashboard_top_row - 1, 7, note, formats["note"])
 
     for offset, ticker in enumerate(valid_tickers):
         worksheet.write(monthly_top_row, monthly_left_col + 1 + offset, ticker, formats["header"])
@@ -263,8 +248,8 @@ def _write_live_covariance_sheet(
     annual_formulas: list[list[str]] = []
     for row_offset in range(n_assets):
         row_asset_cell = _cell(monthly_top_row + 1 + row_offset, monthly_left_col, absolute=True)
-        annual_row: list[str] = []
         monthly_row: list[str] = []
+        annual_row: list[str] = []
         for col_offset in range(n_assets):
             col_asset_cell = _cell(monthly_top_row, monthly_left_col + 1 + col_offset, absolute=True)
             formula = (
@@ -273,7 +258,8 @@ def _write_live_covariance_sheet(
                 f'INDEX({log_data},0,MATCH({col_asset_cell},{log_headers},0))),"")'
             )
             monthly_row.append(formula)
-            annual_row.append(f"=IFERROR({xl_rowcol_to_cell(monthly_top_row + 1 + row_offset, monthly_left_col + 1 + col_offset)}*12,\"\")")
+            monthly_cell = xl_rowcol_to_cell(monthly_top_row + 1 + row_offset, monthly_left_col + 1 + col_offset)
+            annual_row.append(f'=IFERROR({monthly_cell}*12,"")')
         monthly_formulas.append(monthly_row)
         annual_formulas.append(annual_row)
 
@@ -295,8 +281,10 @@ def _write_live_covariance_sheet(
         return_row = total_row + 2
         risk_row = return_row + 1
         sharpe_row = risk_row + 1
+        weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
+        expected_range = f"${xl_col_to_name(left_col + 3)}${first_asset_row + 1}:${xl_col_to_name(left_col + 3)}${last_asset_row + 1}"
 
-        for asset_index, ticker in enumerate(valid_tickers):
+        for asset_index in range(n_assets):
             row = first_asset_row + asset_index
             asset_ref = _cell(monthly_top_row + 1 + asset_index, monthly_left_col, absolute=True)
             worksheet.write_formula(row, left_col, f"={asset_ref}", formats["asset"])
@@ -309,7 +297,6 @@ def _write_live_covariance_sheet(
                 f"=IFERROR(SQRT(INDEX({annual_matrix},MATCH({_cell(row, left_col)},{annual_row_labels},0),MATCH({_cell(row, left_col)},{annual_col_labels},0))),\"\")",
                 formats["percent"],
             )
-            weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
             worksheet.write_formula(
                 row,
                 left_col + 5,
@@ -322,13 +309,15 @@ def _write_live_covariance_sheet(
         worksheet.write(total_row, left_col, "Total", formats["asset"])
         worksheet.write_formula(total_row, left_col + 1, f"=SUM({_cell(first_asset_row, left_col + 1)}:{_cell(last_asset_row, left_col + 1)})", formats["currency"])
         worksheet.write_formula(total_row, left_col + 2, f"=SUM({_cell(first_asset_row, left_col + 2)}:{_cell(last_asset_row, left_col + 2)})", formats["percent"])
-
-        weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
-        expected_range = f"${xl_col_to_name(left_col + 3)}${first_asset_row + 1}:${xl_col_to_name(left_col + 3)}${last_asset_row + 1}"
         worksheet.write(return_row, left_col, "Return", formats["asset"])
         worksheet.write_formula(return_row, left_col + 1, f"=SUMPRODUCT({weights_range},{expected_range})", formats["percent"])
         worksheet.write(risk_row, left_col, "Risk", formats["asset"])
-        worksheet.write_formula(risk_row, left_col + 1, f"=IFERROR(SQRT(MMULT(TRANSPOSE({weights_range}),MMULT({annual_matrix},{weights_range}))),0)", formats["percent"])
+        worksheet.write_formula(
+            risk_row,
+            left_col + 1,
+            f"=IFERROR(SQRT(MMULT(_xlfn.TRANSPOSE({weights_range}),MMULT({annual_matrix},{weights_range}))),0)",
+            formats["percent"],
+        )
         worksheet.write(sharpe_row, left_col, "Sharpe", formats["asset"])
         worksheet.write_formula(sharpe_row, left_col + 1, f"=IFERROR(({_cell(return_row, left_col + 1)}-{_cell(first_asset_row, left_col + 3)})/{_cell(risk_row, left_col + 1)},0)", formats["number"])
 
@@ -344,6 +333,7 @@ def _write_live_covariance_sheet(
     current = write_dashboard(10, "Current Portfolio")
 
     worksheet.set_column(0, max(annual_left_col + n_assets, 18), 14)
+    worksheet.set_column(0, 0, 18)
     worksheet.freeze_panes(monthly_top_row + 1, 1)
     worksheet.autofilter(dashboard_top_row + 1, 0, dashboard_top_row + 1 + n_assets, 7)
 
@@ -425,7 +415,6 @@ def _write_live_drawdown_sheet(
         source_date = f"={_quote_sheet(simple_sheet)}!{_cell(row, 0)}"
         drawdown_ws.write_formula(row, 0, source_date, formats["date"])
         calc_ws.write_formula(row, 0, source_date, formats["date"])
-
         for col_offset, ticker in enumerate(valid_tickers):
             base_col = 1 + col_offset * 4
             ticker_literal = ticker.replace('"', '""')
@@ -479,7 +468,6 @@ def _write_live_downside_sheet(
 
     worksheet.write(0, 0, "Minimum Acceptable Monthly Return", formats["header"])
     worksheet.write_number(0, 1, minimum_acceptable_return, formats["input_percent"])
-
     headers = [
         "Asset",
         "Observations",
@@ -547,7 +535,6 @@ def build_covariance_excel(
         group_by="ticker",
         threads=True,
     )
-
     if raw.empty:
         raise ValueError("No data returned from Yahoo Finance.")
 
@@ -557,12 +544,10 @@ def build_covariance_excel(
 
     adj_close = adj_close.dropna(how="all")
     adj_close.index = pd.to_datetime(adj_close.index)
-
     monthly_prices = adj_close.resample("ME").last()
     monthly_log_returns = np.log(monthly_prices / monthly_prices.shift(1)).iloc[1:]
     monthly_simple_returns = monthly_prices.pct_change().iloc[1:]
     monthly_log_returns_clean = monthly_log_returns.dropna(how="any")
-
     if monthly_log_returns_clean.empty:
         raise ValueError("No complete monthly return rows remain after dropping missing data.")
 
@@ -572,26 +557,11 @@ def build_covariance_excel(
     output_file = output_path / f"{output_prefix}_{timestamp}.xlsx"
 
     with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
-        adj_close.to_excel(writer, sheet_name="Adj_Close_Daily")
-        monthly_log_returns.to_excel(writer, sheet_name="Monthly_Log_Returns")
-        monthly_simple_returns.to_excel(writer, sheet_name="Monthly_Simple_Returns")
-
         workbook = writer.book
         formats = _configure_formats(workbook)
         date_format = workbook.add_format({"num_format": "mm/dd/yyyy"})
         percent_format = workbook.add_format({"num_format": "0.00%"})
         number_format = workbook.add_format({"num_format": "0.00"})
-
-        ws = writer.sheets["Adj_Close_Daily"]
-        ws.set_column("A:A", 14, date_format)
-        ws.set_column("B:ZZ", 14, number_format)
-        ws.freeze_panes(1, 1)
-
-        for sheet_name in ["Monthly_Log_Returns", "Monthly_Simple_Returns"]:
-            ws = writer.sheets[sheet_name]
-            ws.set_column("A:A", 14, date_format)
-            ws.set_column("B:ZZ", 14, percent_format)
-            ws.freeze_panes(1, 1)
 
         cov_refs = _write_live_covariance_sheet(
             writer=writer,
@@ -619,6 +589,20 @@ def build_covariance_excel(
             drawdown_refs=drawdown_refs,
             formats=formats,
         )
+
+        adj_close.to_excel(writer, sheet_name="Adj_Close_Daily")
+        monthly_log_returns.to_excel(writer, sheet_name="Monthly_Log_Returns")
+        monthly_simple_returns.to_excel(writer, sheet_name="Monthly_Simple_Returns")
+
+        ws = writer.sheets["Adj_Close_Daily"]
+        ws.set_column("A:A", 14, date_format)
+        ws.set_column("B:ZZ", 14, number_format)
+        ws.freeze_panes(1, 1)
+        for sheet_name in ["Monthly_Log_Returns", "Monthly_Simple_Returns"]:
+            ws = writer.sheets[sheet_name]
+            ws.set_column("A:A", 14, date_format)
+            ws.set_column("B:ZZ", 14, percent_format)
+            ws.freeze_panes(1, 1)
 
     return {
         "adj_close_daily": adj_close,
