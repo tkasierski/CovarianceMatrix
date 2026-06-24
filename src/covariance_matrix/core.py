@@ -6,7 +6,6 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
-import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name, xl_rowcol_to_cell
 import yfinance as yf
 
@@ -67,10 +66,9 @@ def calculate_drawdown_metrics(
         recovery_candidates = post_trough[post_trough >= peak_value_before_trough]
         drawdown_recovery = recovery_candidates.index[0] if len(recovery_candidates) > 0 else pd.NaT
 
-        in_drawdown = drawdown < 0
         longest_duration = 0
         current_duration = 0
-        for is_drawdown in in_drawdown:
+        for is_drawdown in drawdown < 0:
             if is_drawdown:
                 current_duration += 1
                 longest_duration = max(longest_duration, current_duration)
@@ -177,19 +175,37 @@ def _range(sheet: str, first_row: int, first_col: int, last_row: int, last_col: 
     )
 
 
+def _write_formula(
+    worksheet,
+    row: int,
+    col: int,
+    formula: str,
+    cell_format=None,
+    cached_value: str | float = "",
+) -> None:
+    """Write a formula with a non-zero cached value only when explicitly requested.
+
+    xlsxwriter's default cached formula result is zero. That can look like a hardcoded
+    value in downloaded files before Excel recalculates. These workbook formulas are
+    meant to be live on open, so dashboard formula cells are written with a blank cached
+    value unless a better cached value is known.
+    """
+    worksheet.write_formula(row, col, formula, cell_format, cached_value)
+
+
 def _write_formula_matrix(
-    worksheet: xlsxwriter.worksheet.Worksheet,
+    worksheet,
     start_row: int,
     start_col: int,
     formulas: list[list[str]],
-    cell_format: xlsxwriter.format.Format | None = None,
+    cell_format=None,
 ) -> None:
     for row_offset, row in enumerate(formulas):
         for col_offset, formula in enumerate(row):
-            worksheet.write_formula(start_row + row_offset, start_col + col_offset, formula, cell_format)
+            _write_formula(worksheet, start_row + row_offset, start_col + col_offset, formula, cell_format)
 
 
-def _configure_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.format.Format]:
+def _configure_formats(workbook) -> dict[str, object]:
     return {
         "title": workbook.add_format({"bold": True, "font_size": 14}),
         "note": workbook.add_format({"italic": True, "text_wrap": True, "font_color": "#666666"}),
@@ -213,7 +229,7 @@ def _weighted_covariance_formula(
     first_asset_row: int,
     left_col: int,
 ) -> str:
-    """Return a scalar weighted-covariance formula without TRANSPOSE/MMULT array behavior."""
+    """Return scalar weighted covariance terms for one asset row."""
     annual_row = monthly_top_row + 1 + asset_index
     terms: list[str] = []
     for other_asset_index in range(n_assets):
@@ -227,7 +243,7 @@ def _write_live_covariance_sheet(
     writer: pd.ExcelWriter,
     valid_tickers: list[str],
     returns_last_row: int,
-    formats: dict[str, xlsxwriter.format.Format],
+    formats: dict[str, object],
 ) -> dict[str, object]:
     workbook = writer.book
     worksheet = workbook.add_worksheet("Covariance_Matrix")
@@ -314,25 +330,31 @@ def _write_live_covariance_sheet(
                 first_asset_row=first_asset_row,
                 left_col=left_col,
             )
-            worksheet.write_formula(row, left_col, f"={asset_ref}", formats["asset"])
+            _write_formula(worksheet, row, left_col, f"={asset_ref}", formats["asset"])
             worksheet.write_number(row, left_col + 1, 0, formats["input_currency"])
-            worksheet.write_formula(row, left_col + 2, f"=IFERROR({_cell(row, left_col + 1)}/${_cell(total_row, left_col + 1, absolute=True)},0)", formats["percent"])
+            _write_formula(
+                worksheet,
+                row,
+                left_col + 2,
+                f'=IF({_cell(total_row, left_col + 1, absolute=True)}=0,"",{_cell(row, left_col + 1)}/{_cell(total_row, left_col + 1, absolute=True)})',
+                formats["percent"],
+            )
             worksheet.write_blank(row, left_col + 3, None, formats["input_percent"])
-            worksheet.write_formula(row, left_col + 4, f"=IFERROR(SQRT(INDEX({annual_matrix},{asset_index + 1},{asset_index + 1})),\"\")", formats["percent"])
-            worksheet.write_formula(row, helper_col, f"=IFERROR({weighted_cov_formula},0)", formats["percent"])
-            worksheet.write_formula(row, left_col + 5, f"=IFERROR({_cell(row, helper_col)}/${_cell(risk_row, left_col + 1, absolute=True)},0)", formats["percent"])
-            worksheet.write_formula(row, left_col + 6, f"=IFERROR({_cell(row, left_col + 2)}*{_cell(row, left_col + 5)},0)", formats["percent"])
-            worksheet.write_formula(row, left_col + 7, f"=IFERROR({_cell(row, left_col + 6)}/${_cell(risk_row, left_col + 1, absolute=True)},0)", formats["percent"])
+            _write_formula(worksheet, row, left_col + 4, f'=IFERROR(SQRT(INDEX({annual_matrix},{asset_index + 1},{asset_index + 1})),"")', formats["percent"])
+            _write_formula(worksheet, row, helper_col, f'=IFERROR({weighted_cov_formula},"")', formats["percent"])
+            _write_formula(worksheet, row, left_col + 5, f'=IF({_cell(risk_row, left_col + 1, absolute=True)}="","",{_cell(row, helper_col)}/{_cell(risk_row, left_col + 1, absolute=True)})', formats["percent"])
+            _write_formula(worksheet, row, left_col + 6, f'=IF(OR({_cell(row, left_col + 2)}="",{_cell(row, left_col + 5)}=""),"",{_cell(row, left_col + 2)}*{_cell(row, left_col + 5)})', formats["percent"])
+            _write_formula(worksheet, row, left_col + 7, f'=IF({_cell(risk_row, left_col + 1, absolute=True)}="","",{_cell(row, left_col + 6)}/{_cell(risk_row, left_col + 1, absolute=True)})', formats["percent"])
 
         worksheet.write(total_row, left_col, "Total", formats["asset"])
-        worksheet.write_formula(total_row, left_col + 1, f"=SUM({_cell(first_asset_row, left_col + 1)}:{_cell(last_asset_row, left_col + 1)})", formats["currency"])
-        worksheet.write_formula(total_row, left_col + 2, f"=SUM({_cell(first_asset_row, left_col + 2)}:{_cell(last_asset_row, left_col + 2)})", formats["percent"])
+        _write_formula(worksheet, total_row, left_col + 1, f"=SUM({_cell(first_asset_row, left_col + 1)}:{_cell(last_asset_row, left_col + 1)})", formats["currency"], 0)
+        _write_formula(worksheet, total_row, left_col + 2, f"=SUM({_cell(first_asset_row, left_col + 2)}:{_cell(last_asset_row, left_col + 2)})", formats["percent"])
         worksheet.write(return_row, left_col, "Return", formats["asset"])
-        worksheet.write_formula(return_row, left_col + 1, f"=SUMPRODUCT({weights_range},{expected_range})", formats["percent"])
+        _write_formula(worksheet, return_row, left_col + 1, f"=SUMPRODUCT({weights_range},{expected_range})", formats["percent"])
         worksheet.write(risk_row, left_col, "Risk", formats["asset"])
-        worksheet.write_formula(risk_row, left_col + 1, f"=IFERROR(SQRT(SUMPRODUCT({weights_range},{helper_range})),0)", formats["percent"])
+        _write_formula(worksheet, risk_row, left_col + 1, f'=IF(SUM({weights_range})=0,"",SQRT(SUMPRODUCT({weights_range},{helper_range})))', formats["percent"])
         worksheet.write(sharpe_row, left_col, "Sharpe", formats["asset"])
-        worksheet.write_formula(sharpe_row, left_col + 1, f"=IFERROR(({_cell(return_row, left_col + 1)}-{_cell(first_asset_row, left_col + 3)})/{_cell(risk_row, left_col + 1)},0)", formats["number"])
+        _write_formula(worksheet, sharpe_row, left_col + 1, f'=IF({_cell(risk_row, left_col + 1)}="","",({_cell(return_row, left_col + 1)}-{_cell(first_asset_row, left_col + 3)})/{_cell(risk_row, left_col + 1)})', formats["number"])
 
         return {
             "weights": weights_range,
@@ -347,7 +369,7 @@ def _write_live_covariance_sheet(
 
     worksheet.set_column(0, max(annual_left_col + n_assets, 18), 14)
     worksheet.set_column(0, 0, 18)
-    worksheet.set_column(helper_base_col, helper_base_col + 1, None, None, {"hidden": True})
+    worksheet.set_column(helper_base_col, helper_base_col + 1, 14, None, {"hidden": True})
     worksheet.freeze_panes(monthly_top_row + 1, 1)
     worksheet.autofilter(dashboard_top_row + 1, 0, dashboard_top_row + 1 + n_assets, 7)
 
@@ -363,7 +385,7 @@ def _write_live_correlation_sheet(
     writer: pd.ExcelWriter,
     valid_tickers: list[str],
     returns_last_row: int,
-    formats: dict[str, xlsxwriter.format.Format],
+    formats: dict[str, object],
 ) -> None:
     workbook = writer.book
     worksheet = workbook.add_worksheet("Correlation_Matrix")
@@ -400,7 +422,7 @@ def _write_live_drawdown_sheet(
     writer: pd.ExcelWriter,
     monthly_simple_returns: pd.DataFrame,
     valid_tickers: list[str],
-    formats: dict[str, xlsxwriter.format.Format],
+    formats: dict[str, object],
 ) -> dict[str, dict[str, str]]:
     workbook = writer.book
     drawdown_ws = workbook.add_worksheet("Drawdown_Series")
@@ -427,8 +449,8 @@ def _write_live_drawdown_sheet(
     for row_offset in range(n_obs):
         row = 1 + row_offset
         source_date = f"={_quote_sheet(simple_sheet)}!{_cell(row, 0)}"
-        drawdown_ws.write_formula(row, 0, source_date, formats["date"])
-        calc_ws.write_formula(row, 0, source_date, formats["date"])
+        _write_formula(drawdown_ws, row, 0, source_date, formats["date"])
+        _write_formula(calc_ws, row, 0, source_date, formats["date"])
         for col_offset, ticker in enumerate(valid_tickers):
             base_col = 1 + col_offset * 4
             ticker_literal = ticker.replace('"', '""')
@@ -436,15 +458,15 @@ def _write_live_drawdown_sheet(
                 f"=IFERROR(INDEX({_quote_sheet(simple_sheet)}!$B${row + 1}:${xl_col_to_name(n_assets)}${row + 1},"
                 f"1,MATCH(\"{ticker_literal}\",{simple_headers},0)),\"\")"
             )
-            calc_ws.write_formula(row, base_col, return_formula, formats["percent"])
+            _write_formula(calc_ws, row, base_col, return_formula, formats["percent"])
             if row == 1:
-                calc_ws.write_formula(row, base_col + 1, f"=IFERROR(1+{_cell(row, base_col)},\"\")", formats["number"])
-                calc_ws.write_formula(row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX(1,{_cell(row, base_col + 1)}))", formats["number"])
+                _write_formula(calc_ws, row, base_col + 1, f"=IFERROR(1+{_cell(row, base_col)},\"\")", formats["number"])
+                _write_formula(calc_ws, row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX(1,{_cell(row, base_col + 1)}))", formats["number"])
             else:
-                calc_ws.write_formula(row, base_col + 1, f"=IF({_cell(row, base_col)}=\"\",\"\",{_cell(row - 1, base_col + 1)}*(1+{_cell(row, base_col)}))", formats["number"])
-                calc_ws.write_formula(row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX({_cell(row - 1, base_col + 2)},{_cell(row, base_col + 1)}))", formats["number"])
-            calc_ws.write_formula(row, base_col + 3, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",IF({_cell(row, base_col + 1)}<{_cell(row, base_col + 2)},IF(ROW()=2,1,{_cell(row - 1, base_col + 3)}+1),0))", formats["integer"])
-            drawdown_ws.write_formula(row, 1 + col_offset, f"=IFERROR({_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 1)}/{_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 2)}-1,\"\")", formats["percent"])
+                _write_formula(calc_ws, row, base_col + 1, f"=IF({_cell(row, base_col)}=\"\",\"\",{_cell(row - 1, base_col + 1)}*(1+{_cell(row, base_col)}))", formats["number"])
+                _write_formula(calc_ws, row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX({_cell(row - 1, base_col + 2)},{_cell(row, base_col + 1)}))", formats["number"])
+            _write_formula(calc_ws, row, base_col + 3, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",IF({_cell(row, base_col + 1)}<{_cell(row, base_col + 2)},IF(ROW()=2,1,{_cell(row - 1, base_col + 3)}+1),0))", formats["integer"])
+            _write_formula(drawdown_ws, row, 1 + col_offset, f"=IFERROR({_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 1)}/{_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 2)}-1,\"\")", formats["percent"])
 
     drawdown_ws.set_column(0, 0, 14, formats["date"])
     drawdown_ws.set_column(1, n_assets, 14, formats["percent"])
@@ -469,7 +491,7 @@ def _write_live_downside_sheet(
     n_obs: int,
     minimum_acceptable_return: float,
     drawdown_refs: dict[str, dict[str, str]],
-    formats: dict[str, xlsxwriter.format.Format],
+    formats: dict[str, object],
 ) -> None:
     workbook = writer.book
     worksheet = workbook.add_worksheet("Downside_Risk_Metrics")
@@ -506,18 +528,18 @@ def _write_live_downside_sheet(
         asset_returns = f"INDEX({simple_data},0,MATCH({asset_cell},{simple_headers},0))"
         var_95_cell = _cell(row, 6)
         var_99_cell = _cell(row, 8)
-        worksheet.write_formula(row, 1, f"=COUNT({asset_returns})", formats["integer"])
-        worksheet.write_formula(row, 2, f"=IFERROR(_xlfn.STDEV.S({asset_returns}),\"\")", formats["percent"])
-        worksheet.write_formula(row, 3, f"=IFERROR({_cell(row, 2)}*SQRT(12),\"\")", formats["percent"])
-        worksheet.write_formula(row, 4, f"=IFERROR(SQRT(SUMPRODUCT(({asset_returns}<$B$1)*({asset_returns}-$B$1)^2)/COUNT({asset_returns})),\"\")", formats["percent"])
-        worksheet.write_formula(row, 5, f"=IFERROR({_cell(row, 4)}*SQRT(12),\"\")", formats["percent"])
-        worksheet.write_formula(row, 6, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.05),\"\")", formats["percent"])
-        worksheet.write_formula(row, 7, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_95_cell},{asset_returns}),\"\")", formats["percent"])
-        worksheet.write_formula(row, 8, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.01),\"\")", formats["percent"])
-        worksheet.write_formula(row, 9, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_99_cell},{asset_returns}),\"\")", formats["percent"])
-        worksheet.write_formula(row, 10, f"=IFERROR(MIN({drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
-        worksheet.write_formula(row, 11, f"=IFERROR(MAX({drawdown_refs[ticker]['duration_range']}),\"\")", formats["integer"])
-        worksheet.write_formula(row, 12, f"=IFERROR(LOOKUP(2,1/({drawdown_refs[ticker]['drawdown_range']}<>\"\"),{drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 1, f"=COUNT({asset_returns})", formats["integer"])
+        _write_formula(worksheet, row, 2, f"=IFERROR(_xlfn.STDEV.S({asset_returns}),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 3, f"=IFERROR({_cell(row, 2)}*SQRT(12),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 4, f"=IFERROR(SQRT(SUMPRODUCT(({asset_returns}<$B$1)*({asset_returns}-$B$1)^2)/COUNT({asset_returns})),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 5, f"=IFERROR({_cell(row, 4)}*SQRT(12),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 6, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.05),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 7, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_95_cell},{asset_returns}),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 8, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.01),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 9, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_99_cell},{asset_returns}),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 10, f"=IFERROR(MIN({drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
+        _write_formula(worksheet, row, 11, f"=IFERROR(MAX({drawdown_refs[ticker]['duration_range']}),\"\")", formats["integer"])
+        _write_formula(worksheet, row, 12, f"=IFERROR(LOOKUP(2,1/({drawdown_refs[ticker]['drawdown_range']}<>\"\"),{drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
 
     worksheet.set_column(0, 0, 18)
     worksheet.set_column(1, 1, 14, formats["integer"])
@@ -572,6 +594,7 @@ def build_covariance_excel(
 
     with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
         workbook = writer.book
+        workbook.set_calc_mode("auto")
         formats = _configure_formats(workbook)
         date_format = workbook.add_format({"num_format": "mm/dd/yyyy"})
         percent_format = workbook.add_format({"num_format": "0.00%"})
