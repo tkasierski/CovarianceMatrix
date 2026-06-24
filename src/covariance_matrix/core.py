@@ -6,7 +6,12 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+import xlsxwriter
+from xlsxwriter.utility import xl_col_to_name, xl_rowcol_to_cell
 import yfinance as yf
+
+
+RETURN_OBSERVATION_BUFFER_ROWS = 250
 
 
 def parse_tickers(ticker_text: str | Iterable[str]) -> list[str]:
@@ -169,6 +174,357 @@ def _extract_adjusted_close(raw: pd.DataFrame, tickers: list[str]) -> tuple[pd.D
     return adj_close, valid_tickers, failed_tickers
 
 
+def _quote_sheet(sheet_name: str) -> str:
+    return f"'{sheet_name.replace(chr(39), chr(39) * 2)}'"
+
+
+def _cell(row: int, col: int, *, absolute: bool = False) -> str:
+    return xl_rowcol_to_cell(row, col, row_abs=absolute, col_abs=absolute)
+
+
+def _range(sheet: str, first_row: int, first_col: int, last_row: int, last_col: int, *, absolute: bool = True) -> str:
+    return (
+        f"{_quote_sheet(sheet)}!"
+        f"{xl_rowcol_to_cell(first_row, first_col, row_abs=absolute, col_abs=absolute)}:"
+        f"{xl_rowcol_to_cell(last_row, last_col, row_abs=absolute, col_abs=absolute)}"
+    )
+
+
+def _write_formula_matrix(
+    worksheet: xlsxwriter.worksheet.Worksheet,
+    start_row: int,
+    start_col: int,
+    formulas: list[list[str]],
+    cell_format: xlsxwriter.format.Format | None = None,
+) -> None:
+    for row_offset, row in enumerate(formulas):
+        for col_offset, formula in enumerate(row):
+            worksheet.write_formula(start_row + row_offset, start_col + col_offset, formula, cell_format)
+
+
+def _write_formula_series(
+    worksheet: xlsxwriter.worksheet.Worksheet,
+    start_row: int,
+    start_col: int,
+    formulas: list[str],
+    cell_format: xlsxwriter.format.Format | None = None,
+) -> None:
+    for row_offset, formula in enumerate(formulas):
+        worksheet.write_formula(start_row + row_offset, start_col, formula, cell_format)
+
+
+def _configure_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.format.Format]:
+    return {
+        "title": workbook.add_format({"bold": True, "font_size": 14}),
+        "section": workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1}),
+        "header": workbook.add_format({"bold": True, "bg_color": "#E7E6E6", "border": 1, "text_wrap": True}),
+        "asset": workbook.add_format({"bold": True, "border": 1}),
+        "number": workbook.add_format({"num_format": "0.0000", "border": 1}),
+        "percent": workbook.add_format({"num_format": "0.00%", "border": 1}),
+        "currency": workbook.add_format({"num_format": "$#,##0", "border": 1}),
+        "integer": workbook.add_format({"num_format": "0", "border": 1}),
+        "date": workbook.add_format({"num_format": "mm/dd/yyyy", "border": 1}),
+        "input_percent": workbook.add_format({"num_format": "0.00%", "border": 1, "bg_color": "#E2F0D9"}),
+        "input_currency": workbook.add_format({"num_format": "$#,##0", "border": 1, "bg_color": "#E2F0D9"}),
+        "input_number": workbook.add_format({"num_format": "0.0000", "border": 1, "bg_color": "#E2F0D9"}),
+    }
+
+
+def _write_live_covariance_sheet(
+    writer: pd.ExcelWriter,
+    valid_tickers: list[str],
+    returns_last_row: int,
+    formats: dict[str, xlsxwriter.format.Format],
+) -> dict[str, object]:
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Covariance_Matrix")
+    writer.sheets["Covariance_Matrix"] = worksheet
+
+    n_assets = len(valid_tickers)
+    log_sheet = "Monthly_Log_Returns"
+    log_headers = _range(log_sheet, 0, 1, 0, n_assets)
+    log_data = _range(log_sheet, 1, 1, returns_last_row, n_assets)
+
+    monthly_top_row = 1
+    monthly_left_col = 0
+    annual_left_col = n_assets + 3
+    dashboard_top_row = n_assets + 5
+
+    worksheet.write(0, 0, "Monthly Covariance", formats["title"])
+    worksheet.write(0, annual_left_col, "Annual Covariance", formats["title"])
+
+    for offset, ticker in enumerate(valid_tickers):
+        worksheet.write(monthly_top_row, monthly_left_col + 1 + offset, ticker, formats["header"])
+        worksheet.write(monthly_top_row + 1 + offset, monthly_left_col, ticker, formats["asset"])
+        worksheet.write(monthly_top_row, annual_left_col + 1 + offset, ticker, formats["header"])
+        worksheet.write(monthly_top_row + 1 + offset, annual_left_col, ticker, formats["asset"])
+
+    monthly_formulas: list[list[str]] = []
+    annual_formulas: list[list[str]] = []
+    for row_offset in range(n_assets):
+        row_asset_cell = _cell(monthly_top_row + 1 + row_offset, monthly_left_col, absolute=True)
+        annual_row: list[str] = []
+        monthly_row: list[str] = []
+        for col_offset in range(n_assets):
+            col_asset_cell = _cell(monthly_top_row, monthly_left_col + 1 + col_offset, absolute=True)
+            formula = (
+                f'=IFERROR(_xlfn.COVARIANCE.S('
+                f'INDEX({log_data},0,MATCH({row_asset_cell},{log_headers},0)),'
+                f'INDEX({log_data},0,MATCH({col_asset_cell},{log_headers},0))),"")'
+            )
+            monthly_row.append(formula)
+            annual_row.append(f"=IFERROR({xl_rowcol_to_cell(monthly_top_row + 1 + row_offset, monthly_left_col + 1 + col_offset)}*12,\"\")")
+        monthly_formulas.append(monthly_row)
+        annual_formulas.append(annual_row)
+
+    _write_formula_matrix(worksheet, monthly_top_row + 1, monthly_left_col + 1, monthly_formulas, formats["percent"])
+    _write_formula_matrix(worksheet, monthly_top_row + 1, annual_left_col + 1, annual_formulas, formats["percent"])
+
+    annual_matrix = f"${xl_col_to_name(annual_left_col + 1)}${monthly_top_row + 2}:${xl_col_to_name(annual_left_col + n_assets)}${monthly_top_row + 1 + n_assets}"
+    annual_row_labels = f"${xl_col_to_name(annual_left_col)}${monthly_top_row + 2}:${xl_col_to_name(annual_left_col)}${monthly_top_row + 1 + n_assets}"
+    annual_col_labels = f"${xl_col_to_name(annual_left_col + 1)}${monthly_top_row + 1}:${xl_col_to_name(annual_left_col + n_assets)}${monthly_top_row + 1}"
+
+    def write_dashboard(left_col: int, title: str) -> dict[str, str]:
+        worksheet.write(dashboard_top_row, left_col, title, formats["title"])
+        headers = ["Asset", "$ Value", "Weight", "Expected Return", "Asset Risk", "Marginal Risk", "Risk Contribution", "% of Risk"]
+        worksheet.write_row(dashboard_top_row + 1, left_col, headers, formats["header"])
+
+        first_asset_row = dashboard_top_row + 2
+        last_asset_row = first_asset_row + n_assets - 1
+        total_row = last_asset_row + 1
+        return_row = total_row + 2
+        risk_row = return_row + 1
+        sharpe_row = risk_row + 1
+
+        for asset_index, ticker in enumerate(valid_tickers):
+            row = first_asset_row + asset_index
+            asset_ref = _cell(monthly_top_row + 1 + asset_index, monthly_left_col, absolute=True)
+            worksheet.write_formula(row, left_col, f"={asset_ref}", formats["asset"])
+            worksheet.write_number(row, left_col + 1, 0, formats["input_currency"])
+            worksheet.write_formula(row, left_col + 2, f"=IFERROR({_cell(row, left_col + 1)}/${_cell(total_row, left_col + 1, absolute=True)},0)", formats["percent"])
+            worksheet.write_blank(row, left_col + 3, None, formats["input_percent"])
+            worksheet.write_formula(
+                row,
+                left_col + 4,
+                f"=IFERROR(SQRT(INDEX({annual_matrix},MATCH({_cell(row, left_col)},{annual_row_labels},0),MATCH({_cell(row, left_col)},{annual_col_labels},0))),\"\")",
+                formats["percent"],
+            )
+            weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
+            worksheet.write_formula(
+                row,
+                left_col + 5,
+                f"=IFERROR(INDEX(MMULT({annual_matrix},{weights_range}),MATCH({_cell(row, left_col)},{annual_row_labels},0))/${_cell(risk_row, left_col + 1, absolute=True)},0)",
+                formats["percent"],
+            )
+            worksheet.write_formula(row, left_col + 6, f"=IFERROR({_cell(row, left_col + 2)}*{_cell(row, left_col + 5)},0)", formats["percent"])
+            worksheet.write_formula(row, left_col + 7, f"=IFERROR({_cell(row, left_col + 6)}/${_cell(risk_row, left_col + 1, absolute=True)},0)", formats["percent"])
+
+        worksheet.write(total_row, left_col, "Total", formats["asset"])
+        worksheet.write_formula(total_row, left_col + 1, f"=SUM({_cell(first_asset_row, left_col + 1)}:{_cell(last_asset_row, left_col + 1)})", formats["currency"])
+        worksheet.write_formula(total_row, left_col + 2, f"=SUM({_cell(first_asset_row, left_col + 2)}:{_cell(last_asset_row, left_col + 2)})", formats["percent"])
+
+        weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
+        expected_range = f"${xl_col_to_name(left_col + 3)}${first_asset_row + 1}:${xl_col_to_name(left_col + 3)}${last_asset_row + 1}"
+        worksheet.write(return_row, left_col, "Return", formats["asset"])
+        worksheet.write_formula(return_row, left_col + 1, f"=SUMPRODUCT({weights_range},{expected_range})", formats["percent"])
+        worksheet.write(risk_row, left_col, "Risk", formats["asset"])
+        worksheet.write_formula(risk_row, left_col + 1, f"=IFERROR(SQRT(MMULT(TRANSPOSE({weights_range}),MMULT({annual_matrix},{weights_range}))),0)", formats["percent"])
+        worksheet.write(sharpe_row, left_col, "Sharpe", formats["asset"])
+        worksheet.write_formula(sharpe_row, left_col + 1, f"=IFERROR(({_cell(return_row, left_col + 1)}-{_cell(first_asset_row, left_col + 3)})/{_cell(risk_row, left_col + 1)},0)", formats["number"])
+
+        return {
+            "weights": weights_range,
+            "first_asset_row": str(first_asset_row),
+            "last_asset_row": str(last_asset_row),
+            "return_cell": _cell(return_row, left_col + 1),
+            "risk_cell": _cell(risk_row, left_col + 1),
+        }
+
+    potential = write_dashboard(0, "Potential Portfolio")
+    current = write_dashboard(10, "Current Portfolio")
+
+    worksheet.set_column(0, max(annual_left_col + n_assets, 18), 14)
+    worksheet.freeze_panes(monthly_top_row + 1, 1)
+    worksheet.autofilter(dashboard_top_row + 1, 0, dashboard_top_row + 1 + n_assets, 7)
+
+    return {
+        "monthly_matrix": f"${xl_col_to_name(monthly_left_col + 1)}${monthly_top_row + 2}:${xl_col_to_name(monthly_left_col + n_assets)}${monthly_top_row + 1 + n_assets}",
+        "annual_matrix": annual_matrix,
+        "potential": potential,
+        "current": current,
+    }
+
+
+def _write_live_correlation_sheet(
+    writer: pd.ExcelWriter,
+    valid_tickers: list[str],
+    returns_last_row: int,
+    formats: dict[str, xlsxwriter.format.Format],
+) -> None:
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Correlation_Matrix")
+    writer.sheets["Correlation_Matrix"] = worksheet
+
+    n_assets = len(valid_tickers)
+    log_sheet = "Monthly_Log_Returns"
+    log_headers = _range(log_sheet, 0, 1, 0, n_assets)
+    log_data = _range(log_sheet, 1, 1, returns_last_row, n_assets)
+
+    worksheet.write(0, 0, "Correlation Matrix", formats["title"])
+    for offset, ticker in enumerate(valid_tickers):
+        worksheet.write(1, 1 + offset, ticker, formats["header"])
+        worksheet.write(2 + offset, 0, ticker, formats["asset"])
+
+    formulas: list[list[str]] = []
+    for row_offset in range(n_assets):
+        row_asset_cell = _cell(2 + row_offset, 0, absolute=True)
+        row: list[str] = []
+        for col_offset in range(n_assets):
+            col_asset_cell = _cell(1, 1 + col_offset, absolute=True)
+            row.append(
+                f'=IFERROR(CORREL('
+                f'INDEX({log_data},0,MATCH({row_asset_cell},{log_headers},0)),'
+                f'INDEX({log_data},0,MATCH({col_asset_cell},{log_headers},0))),"")'
+            )
+        formulas.append(row)
+    _write_formula_matrix(worksheet, 2, 1, formulas, formats["number"])
+    worksheet.set_column(0, n_assets, 14)
+    worksheet.freeze_panes(2, 1)
+
+
+def _write_live_drawdown_sheet(
+    writer: pd.ExcelWriter,
+    monthly_simple_returns: pd.DataFrame,
+    valid_tickers: list[str],
+    formats: dict[str, xlsxwriter.format.Format],
+) -> dict[str, dict[str, str]]:
+    workbook = writer.book
+    drawdown_ws = workbook.add_worksheet("Drawdown_Series")
+    calc_ws = workbook.add_worksheet("_Risk_Calc")
+    writer.sheets["Drawdown_Series"] = drawdown_ws
+    writer.sheets["_Risk_Calc"] = calc_ws
+    calc_ws.hide()
+
+    n_assets = len(valid_tickers)
+    n_obs = len(monthly_simple_returns.index)
+    simple_sheet = "Monthly_Simple_Returns"
+    simple_headers = _range(simple_sheet, 0, 1, 0, n_assets)
+
+    drawdown_ws.write(0, 0, "Date", formats["header"])
+    calc_ws.write(0, 0, "Date", formats["header"])
+    for col_offset, ticker in enumerate(valid_tickers):
+        drawdown_ws.write(0, 1 + col_offset, ticker, formats["header"])
+        base_col = 1 + col_offset * 4
+        calc_ws.write(0, base_col, f"{ticker} Return", formats["header"])
+        calc_ws.write(0, base_col + 1, f"{ticker} Wealth", formats["header"])
+        calc_ws.write(0, base_col + 2, f"{ticker} Peak", formats["header"])
+        calc_ws.write(0, base_col + 3, f"{ticker} DD Duration", formats["header"])
+
+    for row_offset in range(n_obs):
+        row = 1 + row_offset
+        source_date = f"={_quote_sheet(simple_sheet)}!{_cell(row, 0)}"
+        drawdown_ws.write_formula(row, 0, source_date, formats["date"])
+        calc_ws.write_formula(row, 0, source_date, formats["date"])
+
+        for col_offset, ticker in enumerate(valid_tickers):
+            base_col = 1 + col_offset * 4
+            ticker_literal = ticker.replace('"', '""')
+            return_formula = (
+                f"=IFERROR(INDEX({_quote_sheet(simple_sheet)}!$B${row + 1}:${xl_col_to_name(n_assets)}${row + 1},"
+                f"1,MATCH(\"{ticker_literal}\",{simple_headers},0)),\"\")"
+            )
+            calc_ws.write_formula(row, base_col, return_formula, formats["percent"])
+            if row == 1:
+                calc_ws.write_formula(row, base_col + 1, f"=IFERROR(1+{_cell(row, base_col)},\"\")", formats["number"])
+                calc_ws.write_formula(row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX(1,{_cell(row, base_col + 1)}))", formats["number"])
+            else:
+                calc_ws.write_formula(row, base_col + 1, f"=IF({_cell(row, base_col)}=\"\",\"\",{_cell(row - 1, base_col + 1)}*(1+{_cell(row, base_col)}))", formats["number"])
+                calc_ws.write_formula(row, base_col + 2, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",MAX({_cell(row - 1, base_col + 2)},{_cell(row, base_col + 1)}))", formats["number"])
+            calc_ws.write_formula(row, base_col + 3, f"=IF({_cell(row, base_col + 1)}=\"\",\"\",IF({_cell(row, base_col + 1)}<{_cell(row, base_col + 2)},IF(ROW()=2,1,{_cell(row - 1, base_col + 3)}+1),0))", formats["integer"])
+            drawdown_ws.write_formula(row, 1 + col_offset, f"=IFERROR({_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 1)}/{_quote_sheet('_Risk_Calc')}!{_cell(row, base_col + 2)}-1,\"\")", formats["percent"])
+
+    drawdown_ws.set_column(0, 0, 14, formats["date"])
+    drawdown_ws.set_column(1, n_assets, 14, formats["percent"])
+    calc_ws.set_column(0, 0, 14, formats["date"])
+    calc_ws.set_column(1, 1 + n_assets * 4, 14)
+    drawdown_ws.freeze_panes(1, 1)
+
+    refs: dict[str, dict[str, str]] = {}
+    for col_offset, ticker in enumerate(valid_tickers):
+        drawdown_col = xl_col_to_name(1 + col_offset)
+        duration_col = xl_col_to_name(1 + col_offset * 4 + 3)
+        refs[ticker] = {
+            "drawdown_range": f"{_quote_sheet('Drawdown_Series')}!${drawdown_col}$2:${drawdown_col}${n_obs + 1}",
+            "duration_range": f"{_quote_sheet('_Risk_Calc')}!${duration_col}$2:${duration_col}${n_obs + 1}",
+        }
+    return refs
+
+
+def _write_live_downside_sheet(
+    writer: pd.ExcelWriter,
+    valid_tickers: list[str],
+    n_obs: int,
+    minimum_acceptable_return: float,
+    drawdown_refs: dict[str, dict[str, str]],
+    formats: dict[str, xlsxwriter.format.Format],
+) -> None:
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Downside_Risk_Metrics")
+    writer.sheets["Downside_Risk_Metrics"] = worksheet
+
+    n_assets = len(valid_tickers)
+    simple_sheet = "Monthly_Simple_Returns"
+    simple_headers = _range(simple_sheet, 0, 1, 0, n_assets)
+    simple_data = _range(simple_sheet, 1, 1, n_obs, n_assets)
+
+    worksheet.write(0, 0, "Minimum Acceptable Monthly Return", formats["header"])
+    worksheet.write_number(0, 1, minimum_acceptable_return, formats["input_percent"])
+
+    headers = [
+        "Asset",
+        "Observations",
+        "Monthly Volatility",
+        "Annualized Volatility",
+        "Monthly Downside Deviation",
+        "Annualized Downside Deviation",
+        "Historical 95% VaR",
+        "Historical 95% CVaR",
+        "Historical 99% VaR",
+        "Historical 99% CVaR",
+        "Largest Peak-to-Trough Drawdown",
+        "Longest Drawdown (Months)",
+        "Current Drawdown",
+    ]
+    worksheet.write_row(2, 0, headers, formats["header"])
+
+    for row_offset, ticker in enumerate(valid_tickers):
+        row = 3 + row_offset
+        worksheet.write(row, 0, ticker, formats["asset"])
+        asset_cell = _cell(row, 0, absolute=True)
+        asset_returns = f"INDEX({simple_data},0,MATCH({asset_cell},{simple_headers},0))"
+        var_95_cell = _cell(row, 6)
+        var_99_cell = _cell(row, 8)
+        worksheet.write_formula(row, 1, f"=COUNT({asset_returns})", formats["integer"])
+        worksheet.write_formula(row, 2, f"=IFERROR(_xlfn.STDEV.S({asset_returns}),\"\")", formats["percent"])
+        worksheet.write_formula(row, 3, f"=IFERROR({_cell(row, 2)}*SQRT(12),\"\")", formats["percent"])
+        worksheet.write_formula(row, 4, f"=IFERROR(SQRT(SUMPRODUCT(({asset_returns}<$B$1)*({asset_returns}-$B$1)^2)/COUNT({asset_returns})),\"\")", formats["percent"])
+        worksheet.write_formula(row, 5, f"=IFERROR({_cell(row, 4)}*SQRT(12),\"\")", formats["percent"])
+        worksheet.write_formula(row, 6, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.05),\"\")", formats["percent"])
+        worksheet.write_formula(row, 7, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_95_cell},{asset_returns}),\"\")", formats["percent"])
+        worksheet.write_formula(row, 8, f"=IFERROR(-_xlfn.PERCENTILE.INC({asset_returns},0.01),\"\")", formats["percent"])
+        worksheet.write_formula(row, 9, f"=IFERROR(-AVERAGEIF({asset_returns},\"<=\"&-{var_99_cell},{asset_returns}),\"\")", formats["percent"])
+        worksheet.write_formula(row, 10, f"=IFERROR(MIN({drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
+        worksheet.write_formula(row, 11, f"=IFERROR(MAX({drawdown_refs[ticker]['duration_range']}),\"\")", formats["integer"])
+        worksheet.write_formula(row, 12, f"=IFERROR(LOOKUP(2,1/({drawdown_refs[ticker]['drawdown_range']}<>\"\"),{drawdown_refs[ticker]['drawdown_range']}),\"\")", formats["percent"])
+
+    worksheet.set_column(0, 0, 18)
+    worksheet.set_column(1, 1, 14, formats["integer"])
+    worksheet.set_column(2, 10, 18, formats["percent"])
+    worksheet.set_column(11, 11, 18, formats["integer"])
+    worksheet.set_column(12, 12, 18, formats["percent"])
+    worksheet.freeze_panes(3, 1)
+
+
 def build_covariance_excel(
     tickers: Iterable[str],
     start_date: str,
@@ -177,7 +533,7 @@ def build_covariance_excel(
     minimum_acceptable_return: float = 0.0,
     output_dir: str | Path = ".",
 ) -> dict[str, object]:
-    """Build covariance analysis tables and write a formatted Excel workbook."""
+    """Build a workbook where core return data is static and risk analytics are live Excel formulas."""
     parsed_tickers = parse_tickers(tickers)
     if not parsed_tickers:
         raise ValueError("Ticker list is empty.")
@@ -210,66 +566,73 @@ def build_covariance_excel(
     if monthly_log_returns_clean.empty:
         raise ValueError("No complete monthly return rows remain after dropping missing data.")
 
-    covariance_matrix = monthly_log_returns_clean.cov()
-    correlation_matrix = monthly_log_returns_clean.corr()
-    downside_metrics, drawdown_series = calculate_downside_risk_metrics(
-        monthly_simple_returns=monthly_simple_returns,
-        minimum_acceptable_return=minimum_acceptable_return,
-    )
-
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_path / f"{output_prefix}_{timestamp}.xlsx"
 
     with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
-        covariance_matrix.to_excel(writer, sheet_name="Covariance_Matrix")
-        correlation_matrix.to_excel(writer, sheet_name="Correlation_Matrix")
-        downside_metrics.to_excel(writer, sheet_name="Downside_Risk_Metrics")
-        drawdown_series.to_excel(writer, sheet_name="Drawdown_Series")
         adj_close.to_excel(writer, sheet_name="Adj_Close_Daily")
         monthly_log_returns.to_excel(writer, sheet_name="Monthly_Log_Returns")
         monthly_simple_returns.to_excel(writer, sheet_name="Monthly_Simple_Returns")
 
         workbook = writer.book
+        formats = _configure_formats(workbook)
+        date_format = workbook.add_format({"num_format": "mm/dd/yyyy"})
         percent_format = workbook.add_format({"num_format": "0.00%"})
         number_format = workbook.add_format({"num_format": "0.00"})
-        integer_format = workbook.add_format({"num_format": "0"})
-        date_format = workbook.add_format({"num_format": "mm/dd/yyyy"})
-
-        ws = writer.sheets["Downside_Risk_Metrics"]
-        ws.set_column("A:A", 18)
-        ws.set_column("B:B", 14, integer_format)
-        ws.set_column("C:J", 18, percent_format)
-        ws.set_column("K:M", 18, percent_format)
-        ws.set_column("N:N", 18, integer_format)
-        ws.set_column("O:Q", 18, date_format)
-
-        for sheet_name in [
-            "Covariance_Matrix",
-            "Correlation_Matrix",
-            "Drawdown_Series",
-            "Monthly_Log_Returns",
-            "Monthly_Simple_Returns",
-        ]:
-            ws = writer.sheets[sheet_name]
-            ws.set_column("A:A", 14, date_format)
-            ws.set_column("B:ZZ", 14, percent_format)
 
         ws = writer.sheets["Adj_Close_Daily"]
         ws.set_column("A:A", 14, date_format)
         ws.set_column("B:ZZ", 14, number_format)
+        ws.freeze_panes(1, 1)
+
+        for sheet_name in ["Monthly_Log_Returns", "Monthly_Simple_Returns"]:
+            ws = writer.sheets[sheet_name]
+            ws.set_column("A:A", 14, date_format)
+            ws.set_column("B:ZZ", 14, percent_format)
+            ws.freeze_panes(1, 1)
+
+        cov_refs = _write_live_covariance_sheet(
+            writer=writer,
+            valid_tickers=valid_tickers,
+            returns_last_row=len(monthly_log_returns.index),
+            formats=formats,
+        )
+        _write_live_correlation_sheet(
+            writer=writer,
+            valid_tickers=valid_tickers,
+            returns_last_row=len(monthly_log_returns.index),
+            formats=formats,
+        )
+        drawdown_refs = _write_live_drawdown_sheet(
+            writer=writer,
+            monthly_simple_returns=monthly_simple_returns,
+            valid_tickers=valid_tickers,
+            formats=formats,
+        )
+        _write_live_downside_sheet(
+            writer=writer,
+            valid_tickers=valid_tickers,
+            n_obs=len(monthly_simple_returns.index),
+            minimum_acceptable_return=minimum_acceptable_return,
+            drawdown_refs=drawdown_refs,
+            formats=formats,
+        )
 
     return {
         "adj_close_daily": adj_close,
         "monthly_log_returns": monthly_log_returns,
         "monthly_simple_returns": monthly_simple_returns,
         "monthly_log_returns_clean": monthly_log_returns_clean,
-        "covariance_matrix": covariance_matrix,
-        "correlation_matrix": correlation_matrix,
-        "downside_metrics": downside_metrics,
-        "drawdown_series": drawdown_series,
         "valid_tickers": valid_tickers,
         "failed_tickers": failed_tickers,
         "output_file": str(output_file),
+        "formula_driven_outputs": [
+            "Covariance_Matrix",
+            "Correlation_Matrix",
+            "Downside_Risk_Metrics",
+            "Drawdown_Series",
+        ],
+        "covariance_references": cov_refs,
     }
