@@ -13,8 +13,13 @@ st.set_page_config(page_title="Covariance Matrix Tool", layout="wide")
 
 st.title("Covariance Matrix + Downside Risk Tool")
 st.write(
-    "Generate covariance, correlation, downside-risk, and drawdown tables for public securities "
-    "using Yahoo Finance data."
+    "Generate a formula-driven Excel workbook for covariance, correlation, downside-risk, "
+    "drawdown, and portfolio risk-dashboard analysis using Yahoo Finance data."
+)
+st.info(
+    "The downloaded workbook writes adjusted daily close, monthly simple returns, and monthly "
+    "log returns as static data. Covariance, correlation, downside-risk metrics, drawdowns, "
+    "and dashboard outputs calculate live in Excel from the return tabs."
 )
 
 with st.sidebar:
@@ -60,7 +65,7 @@ if run_button:
                     output_file = Path(results["output_file"])
                     workbook_bytes = output_file.read_bytes()
 
-                st.success("Analysis complete.")
+                st.success("Workbook created.")
 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -71,14 +76,15 @@ if run_button:
                     failed_tickers = results["failed_tickers"]
                     st.write(", ".join(failed_tickers) if failed_tickers else "None")
 
-                st.subheader("Covariance matrix")
-                st.dataframe(results["covariance_matrix"], use_container_width=True)
-
-                st.subheader("Correlation matrix")
-                st.dataframe(results["correlation_matrix"], use_container_width=True)
-
-                st.subheader("Downside risk metrics")
-                st.dataframe(results["downside_metrics"], use_container_width=True)
+                st.subheader("Workbook outputs")
+                st.write(
+                    "Open the downloaded workbook in Excel to use the live covariance matrix, "
+                    "annualized covariance matrix, correlation matrix, downside-risk metrics, "
+                    "drawdown series, and allocation dashboard."
+                )
+                formula_outputs = results.get("formula_driven_outputs", [])
+                if formula_outputs:
+                    st.write("Formula-driven sheets: " + ", ".join(formula_outputs))
 
                 st.download_button(
                     label="Download Excel workbook",
