@@ -205,6 +205,24 @@ def _configure_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.fo
     }
 
 
+def _weighted_covariance_formula(
+    annual_left_col: int,
+    monthly_top_row: int,
+    asset_index: int,
+    n_assets: int,
+    first_asset_row: int,
+    left_col: int,
+) -> str:
+    """Return a scalar weighted-covariance formula without TRANSPOSE/MMULT array behavior."""
+    annual_row = monthly_top_row + 1 + asset_index
+    terms: list[str] = []
+    for other_asset_index in range(n_assets):
+        annual_cov_cell = _cell(annual_row, annual_left_col + 1 + other_asset_index, absolute=True)
+        weight_cell = _cell(first_asset_row + other_asset_index, left_col + 2, absolute=True)
+        terms.append(f"{annual_cov_cell}*{weight_cell}")
+    return "+".join(terms) if terms else "0"
+
+
 def _write_live_covariance_sheet(
     writer: pd.ExcelWriter,
     valid_tickers: list[str],
@@ -225,6 +243,7 @@ def _write_live_covariance_sheet(
     monthly_left_col = 0
     annual_left_col = n_assets + 3
     dashboard_top_row = n_assets + 7
+    helper_base_col = max(annual_left_col + n_assets + 2, 20)
 
     worksheet.write(0, 0, "Monthly Covariance", formats["title"])
     worksheet.write(0, annual_left_col, "Annual Covariance", formats["title"])
@@ -267,13 +286,12 @@ def _write_live_covariance_sheet(
     _write_formula_matrix(worksheet, monthly_top_row + 1, annual_left_col + 1, annual_formulas, formats["percent"])
 
     annual_matrix = f"${xl_col_to_name(annual_left_col + 1)}${monthly_top_row + 2}:${xl_col_to_name(annual_left_col + n_assets)}${monthly_top_row + 1 + n_assets}"
-    annual_row_labels = f"${xl_col_to_name(annual_left_col)}${monthly_top_row + 2}:${xl_col_to_name(annual_left_col)}${monthly_top_row + 1 + n_assets}"
-    annual_col_labels = f"${xl_col_to_name(annual_left_col + 1)}${monthly_top_row + 1}:${xl_col_to_name(annual_left_col + n_assets)}${monthly_top_row + 1}"
 
-    def write_dashboard(left_col: int, title: str) -> dict[str, str]:
+    def write_dashboard(left_col: int, helper_col: int, title: str) -> dict[str, str]:
         worksheet.write(dashboard_top_row, left_col, title, formats["title"])
         headers = ["Asset", "$ Value", "Weight", "Expected Return", "Asset Risk", "Marginal Risk", "Risk Contribution", "% of Risk"]
         worksheet.write_row(dashboard_top_row + 1, left_col, headers, formats["header"])
+        worksheet.write(dashboard_top_row + 1, helper_col, "Weighted Covariance", formats["header"])
 
         first_asset_row = dashboard_top_row + 2
         last_asset_row = first_asset_row + n_assets - 1
@@ -283,26 +301,26 @@ def _write_live_covariance_sheet(
         sharpe_row = risk_row + 1
         weights_range = f"${xl_col_to_name(left_col + 2)}${first_asset_row + 1}:${xl_col_to_name(left_col + 2)}${last_asset_row + 1}"
         expected_range = f"${xl_col_to_name(left_col + 3)}${first_asset_row + 1}:${xl_col_to_name(left_col + 3)}${last_asset_row + 1}"
+        helper_range = f"${xl_col_to_name(helper_col)}${first_asset_row + 1}:${xl_col_to_name(helper_col)}${last_asset_row + 1}"
 
         for asset_index in range(n_assets):
             row = first_asset_row + asset_index
             asset_ref = _cell(monthly_top_row + 1 + asset_index, monthly_left_col, absolute=True)
+            weighted_cov_formula = _weighted_covariance_formula(
+                annual_left_col=annual_left_col,
+                monthly_top_row=monthly_top_row,
+                asset_index=asset_index,
+                n_assets=n_assets,
+                first_asset_row=first_asset_row,
+                left_col=left_col,
+            )
             worksheet.write_formula(row, left_col, f"={asset_ref}", formats["asset"])
             worksheet.write_number(row, left_col + 1, 0, formats["input_currency"])
             worksheet.write_formula(row, left_col + 2, f"=IFERROR({_cell(row, left_col + 1)}/${_cell(total_row, left_col + 1, absolute=True)},0)", formats["percent"])
             worksheet.write_blank(row, left_col + 3, None, formats["input_percent"])
-            worksheet.write_formula(
-                row,
-                left_col + 4,
-                f"=IFERROR(SQRT(INDEX({annual_matrix},MATCH({_cell(row, left_col)},{annual_row_labels},0),MATCH({_cell(row, left_col)},{annual_col_labels},0))),\"\")",
-                formats["percent"],
-            )
-            worksheet.write_formula(
-                row,
-                left_col + 5,
-                f"=IFERROR(INDEX(MMULT({annual_matrix},{weights_range}),MATCH({_cell(row, left_col)},{annual_row_labels},0))/${_cell(risk_row, left_col + 1, absolute=True)},0)",
-                formats["percent"],
-            )
+            worksheet.write_formula(row, left_col + 4, f"=IFERROR(SQRT(INDEX({annual_matrix},{asset_index + 1},{asset_index + 1})),\"\")", formats["percent"])
+            worksheet.write_formula(row, helper_col, f"=IFERROR({weighted_cov_formula},0)", formats["percent"])
+            worksheet.write_formula(row, left_col + 5, f"=IFERROR({_cell(row, helper_col)}/${_cell(risk_row, left_col + 1, absolute=True)},0)", formats["percent"])
             worksheet.write_formula(row, left_col + 6, f"=IFERROR({_cell(row, left_col + 2)}*{_cell(row, left_col + 5)},0)", formats["percent"])
             worksheet.write_formula(row, left_col + 7, f"=IFERROR({_cell(row, left_col + 6)}/${_cell(risk_row, left_col + 1, absolute=True)},0)", formats["percent"])
 
@@ -312,12 +330,7 @@ def _write_live_covariance_sheet(
         worksheet.write(return_row, left_col, "Return", formats["asset"])
         worksheet.write_formula(return_row, left_col + 1, f"=SUMPRODUCT({weights_range},{expected_range})", formats["percent"])
         worksheet.write(risk_row, left_col, "Risk", formats["asset"])
-        worksheet.write_formula(
-            risk_row,
-            left_col + 1,
-            f"=IFERROR(SQRT(MMULT(_xlfn.TRANSPOSE({weights_range}),MMULT({annual_matrix},{weights_range}))),0)",
-            formats["percent"],
-        )
+        worksheet.write_formula(risk_row, left_col + 1, f"=IFERROR(SQRT(SUMPRODUCT({weights_range},{helper_range})),0)", formats["percent"])
         worksheet.write(sharpe_row, left_col, "Sharpe", formats["asset"])
         worksheet.write_formula(sharpe_row, left_col + 1, f"=IFERROR(({_cell(return_row, left_col + 1)}-{_cell(first_asset_row, left_col + 3)})/{_cell(risk_row, left_col + 1)},0)", formats["number"])
 
@@ -329,11 +342,12 @@ def _write_live_covariance_sheet(
             "risk_cell": _cell(risk_row, left_col + 1),
         }
 
-    potential = write_dashboard(0, "Potential Portfolio")
-    current = write_dashboard(10, "Current Portfolio")
+    potential = write_dashboard(0, helper_base_col, "Potential Portfolio")
+    current = write_dashboard(10, helper_base_col + 1, "Current Portfolio")
 
     worksheet.set_column(0, max(annual_left_col + n_assets, 18), 14)
     worksheet.set_column(0, 0, 18)
+    worksheet.set_column(helper_base_col, helper_base_col + 1, None, None, {"hidden": True})
     worksheet.freeze_panes(monthly_top_row + 1, 1)
     worksheet.autofilter(dashboard_top_row + 1, 0, dashboard_top_row + 1 + n_assets, 7)
 
