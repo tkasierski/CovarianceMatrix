@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "covariance-matrix"
-version = "0.1.0"
-description = "Generate covariance, correlation, downside-risk, and drawdown tables for public securities."
+version = "0.2.0"
+description = "Generate covariance, correlation, downside-risk, and portfolio-risk workbooks from public and custom return data."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
