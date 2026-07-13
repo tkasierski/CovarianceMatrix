@@ -1,90 +1,63 @@
 # Covariance Matrix
 
-A Python command-line and Streamlit tool for generating covariance, correlation, downside-risk, drawdown, and portfolio risk-dashboard tables for public securities using Yahoo Finance data.
+A Python and Streamlit tool for combining public-market prices with monthly simple returns from hedge funds, private assets, or other manually maintained investments.
 
-This repository was migrated from a Google Colab notebook into a portable Python package.
+## Methodology
 
-## Return convention
+All analytics use monthly **simple returns**. Public prices are resampled to month-end and converted with percentage change. Custom files must contain a date column followed by decimal return columns.
 
-The tool uses **monthly simple returns for every risk calculation**. Public-market returns therefore use the same convention as typical hedge-fund and private-investment return reports.
+Missing data is explicit:
 
-Using one return convention means that:
+- `listwise` (default): uses only months with a return for every asset. This produces a consistent common-history covariance matrix.
+- `pairwise`: uses all overlapping observations for each asset pair. This retains more data, but can produce a covariance matrix that is not positive semidefinite.
 
-- covariance and correlation use monthly simple returns
-- volatility and portfolio risk use monthly simple returns
-- VaR, CVaR, downside deviation, and drawdowns use monthly simple returns
-- custom hedge-fund or private-asset returns only need to be pasted into one worksheet
+The workbook includes an observation-count matrix and a validation sheet. The default minimum history is 24 months.
 
-The generated workbook no longer includes or depends on a monthly log-return worksheet.
+## Excel design
 
-## Features
+The workbook contains:
 
-- Pulls daily adjusted close prices from Yahoo Finance via `yfinance`
-- Resamples daily prices to month-end prices
-- Computes monthly simple returns
-- Exports a formula-driven Excel workbook with:
-  - monthly and annualized covariance matrices
-  - correlation matrix
-  - downside-risk metrics
-  - drawdown series
-  - portfolio allocation and risk-contribution dashboards
-  - daily adjusted closes
-  - monthly simple returns
+- `Monthly_Simple_Returns`
+- `Covariance_Matrix`
+- `Correlation_Matrix`
+- `Observation_Counts`
+- `Downside_Risk_Metrics`
+- `Drawdown_Series`
+- `Portfolio_Dashboard`
+- `Validation`
 
-## Installation
+Covariance and correlation formulas use direct return-column ranges rather than repeated `INDEX/MATCH` lookups. The portfolio dashboard has a dedicated annual risk-free-rate input used in the Sharpe ratio.
 
-Clone the repository and install it locally:
-
-```bash
-git clone https://github.com/tkasierski/CovarianceMatrix.git
-cd CovarianceMatrix
-python -m pip install -e .
-```
-
-## Usage
-
-Run from the command line:
+## CLI
 
 ```bash
 covariance-matrix \
-  --tickers AAPL MSFT GOOGL AMZN META SPY \
+  --tickers SPY GLD EWJ \
+  --custom-returns hedge_funds.xlsx \
   --start 2018-01-01 \
-  --end 2025-12-31 \
-  --output-prefix covariance_matrix
+  --end 2026-06-30 \
+  --missing-data-method listwise \
+  --min-observations 24 \
+  --risk-free-rate 0.04
 ```
 
-Optional minimum acceptable monthly return for downside deviation:
+At least one ticker or custom-return file is required.
 
-```bash
-covariance-matrix \
-  --tickers AAPL MSFT SPY \
-  --start 2020-01-01 \
-  --end 2024-12-31 \
-  --minimum-acceptable-return 0.005
+## Custom return file
+
+```text
+Date,Fund A,Fund B
+2024-01-31,0.012,-0.004
+2024-02-29,0.008,0.011
 ```
 
-The command writes a timestamped `.xlsx` file to the selected output directory.
-
-## Custom return streams
-
-Open the generated workbook and replace values in `Monthly_Simple_Returns` with monthly simple returns for public securities, hedge funds, or private assets. Covariance, correlation, downside-risk, drawdown, and portfolio-risk formulas will recalculate from that single worksheet.
-
-Use net returns when the objective is to measure investor-level net risk.
+Returns must be decimal simple returns, so `0.012` means `1.2%`.
 
 ## Development
 
-Install development dependencies:
-
 ```bash
 python -m pip install -e '.[dev]'
+pytest -q
 ```
 
-Run tests:
-
-```bash
-pytest
-```
-
-## Notes
-
-Yahoo Finance data can have missing values, ticker-specific gaps, and survivorship limitations. The tool requires at least one complete monthly observation across all selected assets for the covariance and correlation matrices.
+GitHub Actions runs the test suite on Python 3.10, 3.11, and 3.12 for every pull request and push to `main`.
