@@ -6,7 +6,8 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import streamlit as st
 
-from covariance_matrix.core import build_covariance_excel, parse_tickers
+from covariance_matrix.core import parse_tickers
+from covariance_matrix.simple_core import build_covariance_excel
 
 
 st.set_page_config(page_title="Covariance Matrix Tool", layout="wide")
@@ -17,9 +18,9 @@ st.write(
     "drawdown, and portfolio risk-dashboard analysis using Yahoo Finance data."
 )
 st.info(
-    "The downloaded workbook writes adjusted daily close, monthly simple returns, and monthly "
-    "log returns as static data. Covariance, correlation, downside-risk metrics, drawdowns, "
-    "and dashboard outputs calculate live in Excel from the return tabs."
+    "The downloaded workbook writes adjusted daily close and monthly simple returns as static data. "
+    "Covariance, correlation, downside-risk metrics, drawdowns, and dashboard outputs all calculate "
+    "live in Excel from the same simple-return series."
 )
 
 with st.sidebar:
