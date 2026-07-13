@@ -1,6 +1,9 @@
+import inspect
+
 import numpy as np
 import pandas as pd
 
+import covariance_matrix.simple_core as simple_core
 from covariance_matrix.core import (
     calculate_downside_risk_metrics,
     calculate_drawdown_metrics,
@@ -40,3 +43,12 @@ def test_downside_risk_metrics_reports_positive_var_loss_numbers():
     assert metrics.loc["A", "Observations"] == 5
     assert metrics.loc["A", "Historical 95% VaR"] > 0
     assert metrics.loc["A", "Historical 95% CVaR"] > 0
+
+
+def test_simple_return_pipeline_does_not_reference_log_returns():
+    source = inspect.getsource(simple_core)
+
+    assert "Monthly_Log_Returns" not in source
+    assert "monthly_log_returns" not in source
+    assert "np.log" not in source
+    assert 'returns_sheet = "Monthly_Simple_Returns"' in source
