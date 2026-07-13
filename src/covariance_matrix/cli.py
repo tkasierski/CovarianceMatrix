@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from covariance_matrix.core import build_covariance_excel, parse_tickers
+from covariance_matrix.core import parse_tickers
+from covariance_matrix.simple_core import build_covariance_excel
 
 
 def build_parser() -> argparse.ArgumentParser:
