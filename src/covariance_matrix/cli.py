@@ -4,69 +4,51 @@ import argparse
 import sys
 from pathlib import Path
 
-from covariance_matrix.core import parse_tickers
-from covariance_matrix.simple_core import build_covariance_excel
+from .core import build_covariance_excel
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="covariance-matrix",
-        description="Generate covariance, correlation, downside-risk, and drawdown tables for public securities.",
-    )
-    parser.add_argument(
-        "--tickers",
-        nargs="+",
-        required=True,
-        help="Ticker symbols separated by spaces. Comma-separated values are also accepted within each argument.",
-    )
-    parser.add_argument("--start", required=True, help="Start date in YYYY-MM-DD format.")
-    parser.add_argument("--end", required=True, help="End date in YYYY-MM-DD format.")
-    parser.add_argument(
-        "--output-prefix",
-        default="covariance_matrix",
-        help="Prefix for the generated Excel filename.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=".",
-        help="Directory where the generated Excel workbook should be written.",
-    )
-    parser.add_argument(
-        "--minimum-acceptable-return",
-        type=float,
-        default=0.0,
-        help="Minimum acceptable monthly return used for downside deviation. Example: 0.005 for 0.50%%.",
-    )
+    parser = argparse.ArgumentParser(description="Generate covariance and portfolio-risk analysis.")
+    parser.add_argument("--tickers", nargs="*", default=[])
+    parser.add_argument("--custom-returns", help="CSV or Excel file with Date in the first column and simple returns in remaining columns.")
+    parser.add_argument("--start", default="2018-01-01")
+    parser.add_argument("--end", default="2025-12-31")
+    parser.add_argument("--output-prefix", default="covariance_matrix")
+    parser.add_argument("--output-dir", default=".")
+    parser.add_argument("--minimum-acceptable-return", type=float, default=0.0)
+    parser.add_argument("--risk-free-rate", type=float, default=0.0)
+    parser.add_argument("--missing-data-method", choices=["listwise", "pairwise"], default="listwise")
+    parser.add_argument("--min-observations", type=int, default=24)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    tickers = parse_tickers(args.tickers)
-
+    args = build_parser().parse_args(argv)
+    if not args.tickers and not args.custom_returns:
+        print("Error: provide --tickers, --custom-returns, or both.", file=sys.stderr)
+        return 1
     try:
-        results = build_covariance_excel(
-            tickers=tickers,
+        result = build_covariance_excel(
+            tickers=args.tickers,
             start_date=args.start,
             end_date=args.end,
             output_prefix=args.output_prefix,
             output_dir=Path(args.output_dir),
             minimum_acceptable_return=args.minimum_acceptable_return,
+            risk_free_rate=args.risk_free_rate,
+            missing_data_method=args.missing_data_method,
+            min_observations=args.min_observations,
+            custom_returns_source=args.custom_returns,
+            custom_returns_filename=args.custom_returns,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-
-    print(f"Excel file created: {results['output_file']}")
-    print(f"Valid tickers: {', '.join(results['valid_tickers'])}")
-    failed_tickers = results["failed_tickers"]
-    if failed_tickers:
-        print(f"Failed tickers: {', '.join(failed_tickers)}")
-    else:
-        print("Failed tickers: None")
-
+    print(f"Excel file created: {result['output_file']}")
+    if result["warnings"]:
+        print("Warnings:")
+        for warning in result["warnings"]:
+            print(f"- {warning}")
     return 0
 
 
