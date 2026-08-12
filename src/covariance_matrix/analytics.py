@@ -86,8 +86,10 @@ def calculate_downside_metrics(returns: pd.DataFrame, minimum_acceptable_return:
         if series.empty:
             continue
         downside = np.minimum(series - minimum_acceptable_return, 0)
-        q95 = series.quantile(0.05)
-        q99 = series.quantile(0.01)
+        annual_returns = (1 + series).rolling(12, min_periods=12).apply(np.prod, raw=True) - 1
+        annual_returns = annual_returns.dropna()
+        q95 = annual_returns.quantile(0.05) if not annual_returns.empty else np.nan
+        q99 = annual_returns.quantile(0.01) if not annual_returns.empty else np.nan
         rows.append({
             "Asset": asset,
             "Observations": len(series),
@@ -95,10 +97,10 @@ def calculate_downside_metrics(returns: pd.DataFrame, minimum_acceptable_return:
             "Annualized Volatility": series.std() * np.sqrt(12),
             "Monthly Downside Deviation": np.sqrt(np.mean(downside**2)),
             "Annualized Downside Deviation": np.sqrt(np.mean(downside**2)) * np.sqrt(12),
-            "Historical 95% VaR": -q95,
-            "Historical 95% CVaR": -series[series <= q95].mean(),
-            "Historical 99% VaR": -q99,
-            "Historical 99% CVaR": -series[series <= q99].mean(),
+            "Historical Annual 95% VaR": -q95,
+            "Historical Annual 95% CVaR": -annual_returns[annual_returns <= q95].mean() if not annual_returns.empty else np.nan,
+            "Historical Annual 99% VaR": -q99,
+            "Historical Annual 99% CVaR": -annual_returns[annual_returns <= q99].mean() if not annual_returns.empty else np.nan,
         })
     metrics = pd.DataFrame(rows).set_index("Asset")
     return metrics.join(drawdown_summary, how="left"), drawdown_series

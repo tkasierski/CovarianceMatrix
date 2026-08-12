@@ -100,6 +100,58 @@ def _write_live_drawdown_sheet(
     return references
 
 
+def _write_rolling_annual_return_sheet(
+    writer: pd.ExcelWriter,
+    returns: pd.DataFrame,
+    assets: list[str],
+    fmt_header,
+    fmt_pct,
+) -> dict[str, str]:
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Rolling_12M_Returns")
+    writer.sheets["Rolling_12M_Returns"] = worksheet
+    n_rows = len(returns)
+
+    worksheet.write(0, 0, "Ending Date", fmt_header)
+    for index, asset in enumerate(assets):
+        worksheet.write(0, index + 1, asset, fmt_header)
+    for row, date in enumerate(returns.index, start=1):
+        worksheet.write_datetime(row, 0, date.to_pydatetime())
+
+    references: dict[str, str] = {}
+    for index, asset in enumerate(assets):
+        return_col = index + 1
+        output_col = index + 1
+        for row in range(1, n_rows + 1):
+            if row < 12:
+                worksheet.write_blank(row, output_col, None, fmt_pct)
+                continue
+            start_excel_row = row - 10
+            end_excel_row = row + 1
+            return_cells = [
+                f"'Monthly_Simple_Returns'!{xl_col_to_name(return_col)}{excel_row}"
+                for excel_row in range(start_excel_row, end_excel_row + 1)
+            ]
+            count_range = (
+                f"'Monthly_Simple_Returns'!${xl_col_to_name(return_col)}${start_excel_row}:"
+                f"${xl_col_to_name(return_col)}${end_excel_row}"
+            )
+            compounded = "*".join(f"(1+{cell})" for cell in return_cells)
+            worksheet.write_formula(
+                row,
+                output_col,
+                f'=IF(COUNT({count_range})=12,{compounded}-1,"")',
+                fmt_pct,
+            )
+        references[asset] = (
+            f"'Rolling_12M_Returns'!${xl_col_to_name(output_col)}$2:"
+            f"${xl_col_to_name(output_col)}${n_rows + 1}"
+        )
+
+    worksheet.hide()
+    return references
+
+
 def build_workbook(
     result: AnalysisResult,
     output_file: str | Path,
@@ -228,6 +280,27 @@ def build_workbook(
             f'=IFERROR((B{total_row + 3}-$B$3)/B{total_row + 4},"")',
             fmt_num,
         )
+        portfolio_return_cell = f"B{total_row + 3}"
+        portfolio_risk_cell = f"B{total_row + 4}"
+        for offset, confidence, alpha in [
+            (5, 95, 0.05),
+            (7, 99, 0.01),
+        ]:
+            dashboard.write(total_row + offset, 0, f"Parametric {confidence}% VaR (Annual)", fmt_header)
+            dashboard.write_formula(
+                total_row + offset,
+                1,
+                f'=IFERROR(-{portfolio_return_cell}-NORM.S.INV({alpha})*{portfolio_risk_cell},"")',
+                fmt_pct,
+            )
+            dashboard.write(total_row + offset + 1, 0, f"Parametric {confidence}% CVaR (Annual)", fmt_header)
+            dashboard.write_formula(
+                total_row + offset + 1,
+                1,
+                f'=IFERROR(-{portfolio_return_cell}+{portfolio_risk_cell}*'
+                f'NORM.S.DIST(NORM.S.INV({alpha}),FALSE)/{alpha},"")',
+                fmt_pct,
+            )
         dashboard.set_column(8, 8, None, None, {"hidden": True})
 
         drawdown_refs = _write_live_drawdown_sheet(
@@ -237,6 +310,13 @@ def build_workbook(
             fmt_header,
             fmt_pct,
             fmt_integer,
+        )
+        annual_return_refs = _write_rolling_annual_return_sheet(
+            writer,
+            returns,
+            assets,
+            fmt_header,
+            fmt_pct,
         )
 
         downside = workbook.add_worksheet("Downside_Risk_Metrics")
@@ -248,10 +328,10 @@ def build_workbook(
             "Annualized Volatility",
             "Monthly Downside Deviation",
             "Annualized Downside Deviation",
-            "Historical 95% VaR",
-            "Historical 95% CVaR",
-            "Historical 99% VaR",
-            "Historical 99% CVaR",
+            "Historical Annual 95% VaR",
+            "Historical Annual 95% CVaR",
+            "Historical Annual 99% VaR",
+            "Historical Annual 99% CVaR",
             "Largest Peak-to-Trough Drawdown",
             "Longest Drawdown (Months)",
             "Current Drawdown",
@@ -261,6 +341,7 @@ def build_workbook(
         for index, asset in enumerate(assets):
             row = index + 1
             return_range = _direct_range("Monthly_Simple_Returns", index + 1, n_rows)
+            annual_return_range = annual_return_refs[asset]
             drawdown_range = drawdown_refs[asset]["drawdown"]
             duration_range = drawdown_refs[asset]["duration"]
             downside.write(row, 0, asset, fmt_header)
@@ -276,20 +357,20 @@ def build_workbook(
                 fmt_pct,
             )
             downside.write_formula(row, 5, f'=IFERROR(E{row + 1}*SQRT(12),"")', fmt_pct)
-            downside.write_formula(row, 6, f'=IFERROR(-PERCENTILE({return_range},0.05),"")', fmt_pct)
+            downside.write_formula(row, 6, f'=IFERROR(-PERCENTILE({annual_return_range},0.05),"")', fmt_pct)
             downside.write_formula(
                 row,
                 7,
-                f'=IFERROR(-SUMIF({return_range},"<="&PERCENTILE({return_range},0.05),'
-                f'{return_range})/COUNTIF({return_range},"<="&PERCENTILE({return_range},0.05)),"")',
+                f'=IFERROR(-SUMIF({annual_return_range},"<="&PERCENTILE({annual_return_range},0.05),'
+                f'{annual_return_range})/COUNTIF({annual_return_range},"<="&PERCENTILE({annual_return_range},0.05)),"")',
                 fmt_pct,
             )
-            downside.write_formula(row, 8, f'=IFERROR(-PERCENTILE({return_range},0.01),"")', fmt_pct)
+            downside.write_formula(row, 8, f'=IFERROR(-PERCENTILE({annual_return_range},0.01),"")', fmt_pct)
             downside.write_formula(
                 row,
                 9,
-                f'=IFERROR(-SUMIF({return_range},"<="&PERCENTILE({return_range},0.01),'
-                f'{return_range})/COUNTIF({return_range},"<="&PERCENTILE({return_range},0.01)),"")',
+                f'=IFERROR(-SUMIF({annual_return_range},"<="&PERCENTILE({annual_return_range},0.01),'
+                f'{annual_return_range})/COUNTIF({annual_return_range},"<="&PERCENTILE({annual_return_range},0.01)),"")',
                 fmt_pct,
             )
             downside.write_formula(row, 10, f'=IFERROR(MIN({drawdown_range}),"")', fmt_pct)

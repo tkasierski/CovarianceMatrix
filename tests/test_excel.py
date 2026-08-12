@@ -45,6 +45,27 @@ def test_workbook_uses_direct_ranges_and_dedicated_risk_free_rate(tmp_path: Path
     assert sharpe_formulas and "$B$3" in sharpe_formulas[0]
 
 
+def test_parametric_var_and_cvar_are_directly_below_sharpe_ratio(tmp_path: Path):
+    returns = pd.DataFrame(
+        {"A": [0.01, 0.02, -0.01], "B": [0.02, 0.01, 0.00]},
+        index=pd.date_range("2024-01-31", periods=3, freq="ME"),
+    )
+    output = tmp_path / "test.xlsx"
+    build_workbook(analyze_returns(returns, min_observations=2), output)
+    workbook = openpyxl.load_workbook(output, data_only=False)
+    dashboard = workbook["Portfolio_Dashboard"]
+
+    assert dashboard["A13"].value == "Sharpe Ratio"
+    assert dashboard["A14"].value == "Parametric 95% VaR (Annual)"
+    assert dashboard["A15"].value == "Parametric 95% CVaR (Annual)"
+    assert dashboard["A16"].value == "Parametric 99% VaR (Annual)"
+    assert dashboard["A17"].value == "Parametric 99% CVaR (Annual)"
+    assert "NORM.S.INV(0.05)" in dashboard["B14"].value
+    assert "NORM.S.DIST" in dashboard["B15"].value
+    assert "NORM.S.INV(0.01)" in dashboard["B16"].value
+    assert "NORM.S.DIST" in dashboard["B17"].value
+
+
 def test_live_downside_and_drawdown_formulas_reference_returns(tmp_path: Path):
     returns = pd.DataFrame(
         {"A": [0.10, -0.20, 0.05, 0.25], "B": [0.02, -0.01, 0.03, -0.04]},
@@ -63,11 +84,15 @@ def test_live_downside_and_drawdown_formulas_reference_returns(tmp_path: Path):
     assert "STDEV.S" in downside["C2"].value
     assert "SUMPRODUCT" in downside["E2"].value
     assert "Portfolio_Dashboard'!$B$4" in downside["E2"].value
+    assert downside["G1"].value == "Historical Annual 95% VaR"
+    assert "Rolling_12M_Returns" in downside["G2"].value
     assert "PERCENTILE" in downside["G2"].value
+    assert "Rolling_12M_Returns" in downside["H2"].value
     assert "SUMIF" in downside["H2"].value
     assert "Drawdown_Series" in downside["K2"].value
     assert "MAX" in downside["L2"].value
     assert "INDEX" in downside["M2"].value
+    assert workbook["Rolling_12M_Returns"].sheet_state == "hidden"
 
     drawdown_formulas = _formula_cells(workbook, "Drawdown_Series")
     assert drawdown_formulas
@@ -89,6 +114,7 @@ def test_active_formulas_do_not_contain_implicit_intersection_operator(tmp_path:
         "Portfolio_Dashboard",
         "Downside_Risk_Metrics",
         "Drawdown_Series",
+        "Rolling_12M_Returns",
     ]
     formulas = [
         formula
