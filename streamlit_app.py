@@ -14,7 +14,11 @@ st.title("Covariance Matrix + Portfolio Risk Tool")
 st.write("Combine public-market prices with uploaded monthly simple returns and generate a formula-driven Excel workbook.")
 
 with st.sidebar:
-    start_date = st.date_input("Start date", value=pd.Timestamp("2018-01-01"))
+    start_date = st.date_input(
+        "Start date",
+        value=pd.Timestamp("2018-01-01"),
+        min_value=pd.Timestamp("1995-01-01"),
+    )
     end_date = st.date_input("End date", value=pd.Timestamp.today())
     ticker_text = st.text_area("Public tickers", value="SPY\nGLD", help="Optional. Separate tickers with spaces, commas, or new lines.")
     custom_file = st.file_uploader("Custom monthly returns", type=["csv", "xlsx", "xls"], help="First column must be Date; remaining columns must contain decimal simple returns.")
