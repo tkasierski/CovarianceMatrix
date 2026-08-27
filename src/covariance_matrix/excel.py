@@ -100,6 +100,229 @@ def _write_live_drawdown_sheet(
     return references
 
 
+def _write_portfolio_backtest_sheet(
+    writer: pd.ExcelWriter,
+    returns: pd.DataFrame,
+    n_assets: int,
+    first_dashboard_row: int,
+    fmt_header,
+    fmt_pct,
+    fmt_integer,
+    fmt_date,
+) -> dict[str, str]:
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Portfolio_Backtest")
+    writer.sheets["Portfolio_Backtest"] = worksheet
+    n_rows = len(returns)
+
+    headers = [
+        "Date",
+        "Included",
+        "Portfolio Return",
+        "Wealth Index",
+        "Running Peak",
+        "Drawdown",
+        "Drawdown Duration",
+    ]
+    worksheet.write_row(0, 0, headers, fmt_header)
+
+    first_weight_excel_row = first_dashboard_row + 1
+    last_weight_excel_row = first_dashboard_row + n_assets
+    weight_range = (
+        f"'Portfolio_Dashboard'!$C${first_weight_excel_row}:"
+        f"$C${last_weight_excel_row}"
+    )
+
+    first_return_col = xl_col_to_name(1)
+    last_return_col = xl_col_to_name(n_assets)
+    for row, date in enumerate(returns.index, start=1):
+        excel_row = row + 1
+        return_range = (
+            f"'Monthly_Simple_Returns'!{first_return_col}{excel_row}:"
+            f"{last_return_col}{excel_row}"
+        )
+        worksheet.write_datetime(row, 0, date.to_pydatetime(), fmt_date)
+        worksheet.write_formula(
+            row,
+            1,
+            f'=--AND(A{excel_row}>='"'Portfolio_Dashboard'!$E$1," \
+            f"A{excel_row}<='Portfolio_Dashboard'!$E$2)",
+            fmt_integer,
+        )
+        worksheet.write_formula(
+            row,
+            2,
+            f'=IF(B{excel_row}=1,IFERROR(SUMPRODUCT({return_range},{weight_range}),""),"")',
+            fmt_pct,
+        )
+
+        if row == 1:
+            wealth_formula = f'=IF(C{excel_row}="","",1+C{excel_row})'
+            peak_formula = f'=IF(D{excel_row}="","",D{excel_row})'
+            duration_formula = f'=IF(F{excel_row}<0,1,0)'
+        else:
+            prior_row = excel_row - 1
+            wealth_formula = (
+                f'=IF(C{excel_row}="","",IF(D{prior_row}="",1+C{excel_row},'
+                f'D{prior_row}*(1+C{excel_row})))'
+            )
+            peak_formula = (
+                f'=IF(D{excel_row}="","",IF(E{prior_row}="",D{excel_row},'
+                f'MAX(E{prior_row},D{excel_row})))'
+            )
+            duration_formula = (
+                f'=IF(C{excel_row}="","",IF(F{excel_row}<0,'
+                f'IF(G{prior_row}="",1,G{prior_row}+1),0))'
+            )
+        drawdown_formula = f'=IF(D{excel_row}="","",D{excel_row}/E{excel_row}-1)'
+
+        worksheet.write_formula(row, 3, wealth_formula, fmt_pct)
+        worksheet.write_formula(row, 4, peak_formula, fmt_pct)
+        worksheet.write_formula(row, 5, drawdown_formula, fmt_pct)
+        worksheet.write_formula(row, 6, duration_formula, fmt_integer)
+
+    worksheet.set_column(0, 0, 14)
+    worksheet.set_column(1, 1, 10)
+    worksheet.set_column(2, 5, 16)
+    worksheet.set_column(6, 6, 18)
+    worksheet.freeze_panes(1, 1)
+
+    return {
+        "returns": f"'Portfolio_Backtest'!$C$2:$C${n_rows + 1}",
+        "wealth": f"'Portfolio_Backtest'!$D$2:$D${n_rows + 1}",
+        "drawdown": f"'Portfolio_Backtest'!$F$2:$F${n_rows + 1}",
+        "duration": f"'Portfolio_Backtest'!$G$2:$G${n_rows + 1}",
+    }
+
+
+def _write_portfolio_backtest_metrics(
+    dashboard,
+    metric_start_row: int,
+    ranges: dict[str, str],
+    fmt_header,
+    fmt_pct,
+    fmt_num,
+    fmt_integer,
+) -> None:
+    returns_range = ranges["returns"]
+    wealth_range = ranges["wealth"]
+    drawdown_range = ranges["drawdown"]
+    duration_range = ranges["duration"]
+
+    dashboard.write(metric_start_row, 0, "Historical Portfolio Backtest", fmt_header)
+    dashboard.write(metric_start_row, 1, "Fixed-weight scenario using current dashboard weights")
+
+    rows = {
+        "observations": metric_start_row + 1,
+        "cumulative_return": metric_start_row + 2,
+        "annualized_return": metric_start_row + 3,
+        "annualized_volatility": metric_start_row + 4,
+        "sharpe": metric_start_row + 5,
+        "downside_deviation": metric_start_row + 6,
+        "sortino": metric_start_row + 7,
+        "var95": metric_start_row + 8,
+        "cvar95": metric_start_row + 9,
+        "var99": metric_start_row + 10,
+        "cvar99": metric_start_row + 11,
+        "max_drawdown": metric_start_row + 12,
+        "longest_drawdown": metric_start_row + 13,
+        "current_drawdown": metric_start_row + 14,
+        "worst_month": metric_start_row + 15,
+        "best_month": metric_start_row + 16,
+    }
+
+    for key, label in [
+        ("observations", "Backtest Observations"),
+        ("cumulative_return", "Cumulative Return"),
+        ("annualized_return", "Annualized Return"),
+        ("annualized_volatility", "Annualized Volatility"),
+        ("sharpe", "Historical Sharpe Ratio"),
+        ("downside_deviation", "Annualized Downside Deviation"),
+        ("sortino", "Historical Sortino Ratio"),
+        ("var95", "Historical 95% VaR"),
+        ("cvar95", "Historical 95% CVaR"),
+        ("var99", "Historical 99% VaR"),
+        ("cvar99", "Historical 99% CVaR"),
+        ("max_drawdown", "Maximum Drawdown"),
+        ("longest_drawdown", "Longest Drawdown (Months)"),
+        ("current_drawdown", "Current Drawdown"),
+        ("worst_month", "Worst Month"),
+        ("best_month", "Best Month"),
+    ]:
+        dashboard.write(rows[key], 0, label, fmt_header)
+
+    obs_cell = f"B{rows['observations'] + 1}"
+    cumulative_cell = f"B{rows['cumulative_return'] + 1}"
+    annual_return_cell = f"B{rows['annualized_return'] + 1}"
+    downside_cell = f"B{rows['downside_deviation'] + 1}"
+
+    dashboard.write_formula(rows["observations"], 1, f"=COUNT({returns_range})", fmt_integer)
+    dashboard.write_formula(
+        rows["cumulative_return"],
+        1,
+        f'=IFERROR(LOOKUP(2,1/({wealth_range}<>""),{wealth_range})-1,"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(
+        rows["annualized_return"],
+        1,
+        f'=IFERROR((1+{cumulative_cell})^(12/{obs_cell})-1,"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(
+        rows["annualized_volatility"],
+        1,
+        f'=IFERROR(STDEV.S({returns_range})*SQRT(12),"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(
+        rows["sharpe"],
+        1,
+        f'=IFERROR(({annual_return_cell}-$B$3)/B{rows["annualized_volatility"] + 1},"")',
+        fmt_num,
+    )
+    dashboard.write_formula(
+        rows["downside_deviation"],
+        1,
+        f'=IFERROR(SQRT(SUMPRODUCT(--ISNUMBER({returns_range}),'
+        f'--({returns_range}<$B$4),({returns_range}-$B$4)^2)'
+        f'/COUNT({returns_range}))*SQRT(12),"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(
+        rows["sortino"],
+        1,
+        f'=IFERROR(({annual_return_cell}-((1+$B$4)^12-1))/{downside_cell},"")',
+        fmt_num,
+    )
+    dashboard.write_formula(rows["var95"], 1, f'=IFERROR(-PERCENTILE({returns_range},0.05),"")', fmt_pct)
+    dashboard.write_formula(
+        rows["cvar95"],
+        1,
+        f'=IFERROR(-SUMIF({returns_range},"<="&PERCENTILE({returns_range},0.05),'
+        f'{returns_range})/COUNTIF({returns_range},"<="&PERCENTILE({returns_range},0.05)),"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(rows["var99"], 1, f'=IFERROR(-PERCENTILE({returns_range},0.01),"")', fmt_pct)
+    dashboard.write_formula(
+        rows["cvar99"],
+        1,
+        f'=IFERROR(-SUMIF({returns_range},"<="&PERCENTILE({returns_range},0.01),'
+        f'{returns_range})/COUNTIF({returns_range},"<="&PERCENTILE({returns_range},0.01)),"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(rows["max_drawdown"], 1, f'=IFERROR(-MIN({drawdown_range}),"")', fmt_pct)
+    dashboard.write_formula(rows["longest_drawdown"], 1, f'=IFERROR(MAX({duration_range}),"")', fmt_integer)
+    dashboard.write_formula(
+        rows["current_drawdown"],
+        1,
+        f'=IFERROR(LOOKUP(2,1/({drawdown_range}<>""),{drawdown_range}),"")',
+        fmt_pct,
+    )
+    dashboard.write_formula(rows["worst_month"], 1, f'=IFERROR(MIN({returns_range}),"")', fmt_pct)
+    dashboard.write_formula(rows["best_month"], 1, f'=IFERROR(MAX({returns_range}),"")', fmt_pct)
+
+
 def build_workbook(
     result: AnalysisResult,
     output_file: str | Path,
@@ -122,6 +345,7 @@ def build_workbook(
         fmt_money = workbook.add_format({"num_format": "$#,##0", "border": 1})
         fmt_input = workbook.add_format({"num_format": "0.00%", "bg_color": "#E2F0D9", "border": 1})
         fmt_date = workbook.add_format({"num_format": "mm/dd/yyyy"})
+        fmt_date_input = workbook.add_format({"num_format": "mm/dd/yyyy", "bg_color": "#E2F0D9", "border": 1})
         fmt_integer = workbook.add_format({"num_format": "0", "border": 1})
 
         returns.to_excel(writer, sheet_name="Monthly_Simple_Returns")
@@ -167,6 +391,13 @@ def build_workbook(
         dashboard.write_number(2, 1, risk_free_rate, fmt_input)
         dashboard.write(3, 0, "Minimum acceptable monthly return", fmt_header)
         dashboard.write_number(3, 1, minimum_acceptable_return, fmt_input)
+        dashboard.write(0, 3, "Backtest Start Date", fmt_header)
+        dashboard.write_datetime(0, 4, returns.index.min().to_pydatetime(), fmt_date_input)
+        dashboard.write(1, 3, "Backtest End Date", fmt_header)
+        dashboard.write_datetime(1, 4, returns.index.max().to_pydatetime(), fmt_date_input)
+        dashboard.write(2, 3, "Backtest Mode", fmt_header)
+        dashboard.write(2, 4, "Fixed current weights; historical scenario only")
+
         headers = [
             "Asset",
             "$ Value",
@@ -229,6 +460,26 @@ def build_workbook(
             fmt_num,
         )
         dashboard.set_column(8, 8, None, None, {"hidden": True})
+
+        backtest_ranges = _write_portfolio_backtest_sheet(
+            writer,
+            returns,
+            n_assets,
+            first_row,
+            fmt_header,
+            fmt_pct,
+            fmt_integer,
+            fmt_date,
+        )
+        _write_portfolio_backtest_metrics(
+            dashboard,
+            total_row + 7,
+            backtest_ranges,
+            fmt_header,
+            fmt_pct,
+            fmt_num,
+            fmt_integer,
+        )
 
         drawdown_refs = _write_live_drawdown_sheet(
             writer,
