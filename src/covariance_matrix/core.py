@@ -9,6 +9,7 @@ import pandas as pd
 from .analytics import MissingDataMethod, analyze_returns
 from .data import download_adjusted_close, load_custom_returns, merge_return_sources, monthly_simple_returns, parse_tickers
 from .excel import build_workbook
+from .workbook_postprocess import apply_phase1_backtest_tweaks
 
 
 def build_covariance_excel(
@@ -46,6 +47,7 @@ def build_covariance_excel(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"{output_prefix}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     build_workbook(result, output_file, risk_free_rate, minimum_acceptable_return, prices)
+    apply_phase1_backtest_tweaks(output_file)
     return {
         "output_file": str(output_file),
         "valid_tickers": valid,
