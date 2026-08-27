@@ -27,17 +27,14 @@ def apply_phase1_backtest_tweaks(output_file: str | Path) -> None:
     last_data_row = backtest.max_row
     monthly_returns = f"'Portfolio_Backtest'!$C${first_data_row}:$C${last_data_row}"
 
-    # The original SUMPRODUCT expression still evaluates arithmetic against the
-    # formula-generated empty strings outside the selected backtest window.
-    # Wrapping the per-observation downside expression in IFERROR converts those
-    # non-numeric rows to zero while COUNT keeps the denominator numeric-only.
+    # Ignore formula-generated empty strings outside the selected backtest window.
     downside_row = _find_label_row(dashboard, "Annualized Downside Deviation")
     dashboard.cell(row=downside_row, column=2).value = (
         f'=IFERROR(SQRT(SUMPRODUCT(IFERROR(({monthly_returns}<$B$4)*'
         f'({monthly_returns}-$B$4)^2,0))/COUNT({monthly_returns}))*SQRT(12),"")'
     )
 
-    # Make the existing historical tail-risk horizon explicit.
+    # Make the existing monthly historical tail-risk horizon explicit.
     label_updates = {
         "Historical 95% VaR": "Historical Monthly 95% VaR",
         "Historical 95% CVaR": "Historical Monthly 95% CVaR",
@@ -59,8 +56,9 @@ def apply_phase1_backtest_tweaks(output_file: str | Path) -> None:
             continue
         start_row = row - 11
         monthly_window = f"C{start_row}:C{row}"
+        compounded_terms = "*".join(f"(1+C{month_row})" for month_row in range(start_row, row + 1))
         backtest.cell(row=row, column=annual_return_col).value = (
-            f'=IF(COUNT({monthly_window})=12,PRODUCT(1+{monthly_window})-1,"")'
+            f'=IF(COUNT({monthly_window})=12,{compounded_terms}-1,"")'
         )
         backtest.cell(row=row, column=annual_return_col).number_format = "0.00%"
 
