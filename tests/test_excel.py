@@ -74,6 +74,42 @@ def test_live_downside_and_drawdown_formulas_reference_returns(tmp_path: Path):
     assert any("Monthly_Simple_Returns" in formula for formula in drawdown_formulas)
 
 
+def test_portfolio_backtest_is_live_and_date_windowed(tmp_path: Path):
+    returns = pd.DataFrame(
+        {"A": [0.10, -0.20, 0.05, 0.25], "B": [0.02, -0.01, 0.03, -0.04]},
+        index=pd.date_range("2024-01-31", periods=4, freq="ME"),
+    )
+    output = tmp_path / "test.xlsx"
+    build_workbook(analyze_returns(returns, min_observations=2), output)
+    workbook = openpyxl.load_workbook(output, data_only=False)
+
+    assert "Portfolio_Backtest" in workbook.sheetnames
+    dashboard = workbook["Portfolio_Dashboard"]
+    backtest = workbook["Portfolio_Backtest"]
+
+    assert dashboard["D1"].value == "Backtest Start Date"
+    assert dashboard["D2"].value == "Backtest End Date"
+    assert dashboard["E1"].value == returns.index.min().to_pydatetime()
+    assert dashboard["E2"].value == returns.index.max().to_pydatetime()
+
+    assert "Portfolio_Dashboard'!$E$1" in backtest["B2"].value
+    assert "Portfolio_Dashboard'!$E$2" in backtest["B2"].value
+    assert "SUMPRODUCT" in backtest["C2"].value
+    assert "Monthly_Simple_Returns" in backtest["C2"].value
+    assert "Portfolio_Dashboard'!$C$7:$C$8" in backtest["C2"].value
+    assert "MAX" in backtest["E3"].value
+    assert "/E" in backtest["F2"].value
+
+    dashboard_formulas = _formula_cells(workbook, "Portfolio_Dashboard")
+    backtest_metric_formulas = [
+        formula for formula in dashboard_formulas if "Portfolio_Backtest" in formula
+    ]
+    assert any("PERCENTILE" in formula for formula in backtest_metric_formulas)
+    assert any("SUMIF" in formula for formula in backtest_metric_formulas)
+    assert any("MIN('Portfolio_Backtest'!$F$2" in formula for formula in backtest_metric_formulas)
+    assert any("LOOKUP" in formula for formula in backtest_metric_formulas)
+
+
 def test_active_formulas_do_not_contain_implicit_intersection_operator(tmp_path: Path):
     returns = pd.DataFrame(
         {"A": [0.01, 0.02, -0.01], "B": [0.02, 0.01, 0.00]},
@@ -87,6 +123,7 @@ def test_active_formulas_do_not_contain_implicit_intersection_operator(tmp_path:
         "Covariance_Matrix",
         "Correlation_Matrix",
         "Portfolio_Dashboard",
+        "Portfolio_Backtest",
         "Downside_Risk_Metrics",
         "Drawdown_Series",
     ]
