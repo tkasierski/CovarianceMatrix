@@ -127,39 +127,32 @@ def _write_portfolio_backtest_sheet(
     worksheet.write_row(0, 0, headers, fmt_header)
 
     first_weight_excel_row = first_dashboard_row + 1
-    last_weight_excel_row = first_dashboard_row + n_assets
-    weight_range = (
-        f"'Portfolio_Dashboard'!$C${first_weight_excel_row}:"
-        f"$C${last_weight_excel_row}"
-    )
-
-    first_return_col = xl_col_to_name(1)
-    last_return_col = xl_col_to_name(n_assets)
     for row, date in enumerate(returns.index, start=1):
         excel_row = row + 1
-        return_range = (
-            f"'Monthly_Simple_Returns'!{first_return_col}{excel_row}:"
-            f"{last_return_col}{excel_row}"
+        weighted_terms = "+".join(
+            f"'Monthly_Simple_Returns'!{xl_col_to_name(index + 1)}{excel_row}*"
+            f"'Portfolio_Dashboard'!$C${first_weight_excel_row + index}"
+            for index in range(n_assets)
         )
         worksheet.write_datetime(row, 0, date.to_pydatetime(), fmt_date)
         worksheet.write_formula(
             row,
             1,
-            f'=--AND(A{excel_row}>='"'Portfolio_Dashboard'!$E$1," \
+            f"=--AND(A{excel_row}>='Portfolio_Dashboard'!$E$1,"
             f"A{excel_row}<='Portfolio_Dashboard'!$E$2)",
             fmt_integer,
         )
         worksheet.write_formula(
             row,
             2,
-            f'=IF(B{excel_row}=1,IFERROR(SUMPRODUCT({return_range},{weight_range}),""),"")',
+            f'=IF(B{excel_row}=1,IFERROR({weighted_terms},""),"")',
             fmt_pct,
         )
 
         if row == 1:
             wealth_formula = f'=IF(C{excel_row}="","",1+C{excel_row})'
             peak_formula = f'=IF(D{excel_row}="","",D{excel_row})'
-            duration_formula = f'=IF(F{excel_row}<0,1,0)'
+            duration_formula = f'=IF(C{excel_row}="","",IF(F{excel_row}<0,1,0))'
         else:
             prior_row = excel_row - 1
             wealth_formula = (
