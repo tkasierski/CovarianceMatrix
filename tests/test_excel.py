@@ -94,9 +94,8 @@ def test_portfolio_backtest_is_live_and_date_windowed(tmp_path: Path):
 
     assert "Portfolio_Dashboard'!$E$1" in backtest["B2"].value
     assert "Portfolio_Dashboard'!$E$2" in backtest["B2"].value
-    assert "SUMPRODUCT" in backtest["C2"].value
-    assert "Monthly_Simple_Returns" in backtest["C2"].value
-    assert "Portfolio_Dashboard'!$C$7:$C$8" in backtest["C2"].value
+    assert "Monthly_Simple_Returns'!B2*'Portfolio_Dashboard'!$C$7" in backtest["C2"].value
+    assert "Monthly_Simple_Returns'!C2*'Portfolio_Dashboard'!$C$8" in backtest["C2"].value
     assert "MAX" in backtest["E3"].value
     assert "/E" in backtest["F2"].value
 
